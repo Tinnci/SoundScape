@@ -1,9 +1,7 @@
 #include "ui_manager.h"
 #include "ui.h" // Include for LED_MODE definitions
 #include <Arduino.h> // For Serial, maybe millis() if needed later
-
-// 声明外部函数，用于检查内存状态
-extern bool isLowMemory(size_t threshold);
+#include "memory_utils.h"
 
 // Constructor
 UIManager::UIManager() :

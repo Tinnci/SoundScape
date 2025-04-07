@@ -32,278 +32,30 @@
  */
 
 #include <Arduino.h>
-// #include <driver/i2s.h> // Old I2S header
-#include "driver/i2s_std.h" // New I2S Standard Mode header
-#include "driver/i2s_common.h" // Common I2S types
+#include "driver/i2s_std.h"
+#include "driver/i2s_common.h"
 #include <WiFi.h>
 #include <time.h>
 #include "FS.h"
-#include "SD_MMC.h" // Use SDMMC library
-// #include "SPI.h" // SPI no longer needed for SD card
+#include "SD_MMC.h"
 #include <Adafruit_NeoPixel.h>
 #include <Wire.h>
 #include <Adafruit_Si7021.h>
 #include <BH1750.h>
 #include <TFT_eSPI.h>
 
-// Include the new UI Manager and Screen classes
-#include "ui_manager.h" // Includes screen.h implicitly
+#include "ui_manager.h"
 #include "main_screen.h"
 #include "noise_screen.h"
 #include "temp_hum_screen.h"
 #include "light_screen.h"
 #include "status_screen.h"
-#include "ui.h" // Include for LED_MODE definitions and utility functions
-
-// 包含自定义头文件
+#include "ui.h"
 #include "ui_constants.h"
 #include "data_validator.h"
-
-// 内存管理函数声明（必须在I2SMicManager类之前定义）
-/**
- * 检测系统内存是否不足
- * 当空闲内存低于阈值时返回true
- * @param threshold 内存不足阈值（字节）
- * @return 内存是否不足
- */
-bool isLowMemory(size_t threshold = 10000) {  // 默认10KB阈值
-  return ESP.getFreeHeap() < threshold;
-}
-
-/**
- * 释放紧急内存
- * 当系统内存不足时，释放预留的紧急内存块
- * @return 是否成功释放内存
- */
-extern uint8_t* emergencyMemory;
-extern const size_t EMERGENCY_MEMORY_SIZE;
-bool releaseEmergencyMemory() {
-  if (emergencyMemory != nullptr) {
-    Serial.println("警告：内存不足，释放紧急预留内存");
-    free(emergencyMemory);
-    emergencyMemory = nullptr;
-    return true;
-  }
-  return false; // 没有紧急内存可释放
-}
-
-/**
- * I2S麦克风管理类
- * 封装I2S麦克风的初始化、配置和数据读取功能
- * 提供简单的API进行噪声监测
- */
-class I2SMicManager {
-private:
-    i2s_chan_handle_t rx_handle_;
-    uint32_t sample_rate_;
-    uint8_t ws_pin_;
-    uint8_t sd_pin_;
-    uint8_t sck_pin_;
-    i2s_port_t port_num_;
-    bool initialized_;
-    
-    // 采样缓冲区（静态分配以减少内存碎片）
-    static constexpr size_t BUFFER_SIZE = 512;
-    int32_t samples_[BUFFER_SIZE];
-    
-public:
-    /**
-     * 构造函数
-     * @param sample_rate 采样率（Hz）
-     * @param ws_pin WS引脚
-     * @param sd_pin SD引脚
-     * @param sck_pin SCK引脚
-     * @param port_num I2S端口号
-     */
-    I2SMicManager(uint32_t sample_rate = 16000, 
-                 uint8_t ws_pin = 16, 
-                 uint8_t sd_pin = 17, 
-                 uint8_t sck_pin = 15,
-                 i2s_port_t port_num = I2S_PORT_NUM) :
-        sample_rate_(sample_rate),
-        ws_pin_(ws_pin),
-        sd_pin_(sd_pin),
-        sck_pin_(sck_pin),
-        port_num_(port_num),
-        initialized_(false) {}
-    
-    /**
-     * 初始化I2S麦克风
-     * @return 初始化是否成功
-     */
-    bool begin() {
-        if (initialized_) {
-            return true; // 已经初始化过
-        }
-        
-        // 配置I2S通道
-        i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(port_num_, I2S_ROLE_MASTER);
-        esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &rx_handle_);
-        if (err != ESP_OK) {
-            Serial.printf("I2S通道创建失败: %s\n", esp_err_to_name(err));
-            return false;
-        }
-        
-        // 配置I2S标准模式
-        i2s_std_config_t std_cfg = {
-            .clk_cfg = {
-                .sample_rate_hz = sample_rate_,
-                .clk_src = I2S_CLK_SRC_DEFAULT,
-                .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-            },
-            .slot_cfg = {
-                .data_bit_width = I2S_DATA_BIT_WIDTH_24BIT,  // 改为24位以匹配INMP441
-                .slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT,  // 保持32位槽宽
-                .slot_mode = I2S_SLOT_MODE_MONO,
-                .slot_mask = I2S_STD_SLOT_LEFT,
-                .ws_width = 1,
-                .ws_pol = false,
-                .bit_shift = true,                           // 启用位移以正确对齐数据
-                .left_align = false,
-                .big_endian = false,
-                .bit_order_lsb = false,
-            },
-            .gpio_cfg = {
-                .mclk = I2S_GPIO_UNUSED,
-                .bclk = (gpio_num_t)sck_pin_,  // SCK
-                .ws = (gpio_num_t)ws_pin_,     // WS
-                .dout = I2S_GPIO_UNUSED,
-                .din = (gpio_num_t)sd_pin_,    // SD
-                .invert_flags = {
-                    .mclk_inv = false,
-                    .bclk_inv = false,
-                    .ws_inv = false,
-                },
-            },
-        };
-        
-        // 初始化I2S标准模式
-        err = i2s_channel_init_std_mode(rx_handle_, &std_cfg);
-        if (err != ESP_OK) {
-            Serial.printf("I2S标准模式初始化失败: %s\n", esp_err_to_name(err));
-            return false;
-        }
-        
-        // 启用I2S通道
-        err = i2s_channel_enable(rx_handle_);
-        if (err != ESP_OK) {
-            Serial.printf("I2S通道启用失败: %s\n", esp_err_to_name(err));
-            return false;
-        }
-        
-        initialized_ = true;
-        Serial.println("I2S麦克风初始化成功");
-        return true;
-    }
-    
-    /**
-     * 读取麦克风数据并计算分贝值
-     * @param timeout_ms 读取超时时间（毫秒）
-     * @return 分贝值
-     */
-    float readNoiseLevel(int timeout_ms = 500) {
-        if (!initialized_) {
-            if (!begin()) {
-                return 0.0f; // 未初始化且初始化失败返回0
-            }
-        }
-        
-        // 安全检查内存状态
-        if (isLowMemory(15000)) {
-            releaseEmergencyMemory();
-        }
-        
-        size_t bytes_read = 0;
-        esp_err_t result = i2s_channel_read(rx_handle_, samples_, sizeof(samples_), &bytes_read, timeout_ms);
-        
-        if (result != ESP_OK || bytes_read == 0) {
-            Serial.printf("I2S读取失败: %s\n", esp_err_to_name(result));
-            return 0.0f;
-        }
-        
-        // 添加调试信息
-        Serial.printf("I2S读取成功: 读取了 %d 字节, %d 个样本\n", bytes_read, bytes_read / sizeof(int32_t));
-        
-        // 计算分贝值
-        double sum = 0;
-        size_t validSamples = bytes_read / sizeof(int32_t);
-        validSamples = min(validSamples, BUFFER_SIZE); // 额外安全检查
-        
-        // 打印前几个样本值用于调试
-        Serial.println("样本值示例:");
-        for (size_t i = 0; i < min(validSamples, (size_t)10); i++) {
-            int32_t sample = samples_[i];
-            // 将24位有符号数扩展为32位
-            if (sample & 0x800000) {
-                sample |= 0xFF000000;
-            }
-            Serial.printf("  样本[%d] = %d\n", i, sample);
-            sum += sample * sample;
-        }
-        
-        for (size_t i = 10; i < validSamples; i++) {
-            int32_t sample = samples_[i];
-            // 将24位有符号数扩展为32位
-            if (sample & 0x800000) {
-                sample |= 0xFF000000;
-            }
-            sum += sample * sample;
-        }
-        
-        if (validSamples == 0) {
-            return 0.0f;
-        }
-        
-        double rms = sqrt(sum / validSamples);
-        // 调整参考电平，INMP441通常需要较小的参考电平
-        const double refLevel = 0.1;
-        // 调整计算方法
-        float db = 20 * log10(rms / refLevel);
-        
-        // 如果计算结果是负无穷（当rms接近0时），设置一个最小值
-        if (isinf(db) && db < 0) {
-            db = 0.0f;
-        }
-        
-        // 输出计算过程
-        Serial.printf("RMS值: %.2f, 参考电平: %.2f, 原始分贝值: %.2f\n", rms, refLevel, db);
-        
-        // 使用DataValidator验证分贝值
-        float validated_db = DataValidator::validateDecibels(db);
-        Serial.printf("验证后分贝值: %.2f\n", validated_db);
-        
-        return validated_db;
-    }
-    
-    /**
-     * 关闭I2S麦克风
-     */
-    void end() {
-        if (initialized_) {
-            i2s_channel_disable(rx_handle_);
-            i2s_del_channel(rx_handle_);
-            initialized_ = false;
-            Serial.println("I2S麦克风已关闭");
-        }
-    }
-    
-    /**
-     * 获取初始化状态
-     * @return 是否已初始化
-     */
-    bool isInitialized() const {
-        return initialized_;
-    }
-};
-
-// WiFi配置 - 请修改为您的WiFi信息
-const char* ssid = "501_2.4G";      // 更改为您的WiFi名称
-const char* password = "12340000";  // 更改为您的WiFi密码
-
-// NTP服务器配置
-const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 28800;  // 设置为您的时区，这里是UTC+8 (中国)
-const int   daylightOffset_sec = 0; // 夏令时偏移量，中国不使用夏令时
+#include "i2s_mic_manager.h"
+#include "memory_utils.h"
+#include "communication_manager.h"
 
 // GPIO定义
 // I2S麦克风引脚
@@ -341,7 +93,7 @@ const int   daylightOffset_sec = 0; // 夏令时偏移量，中国不使用夏�
 #define RECORD_TIME_MS 1000  // 每次记录的时长（毫秒）
 #define SAMPLE_RATE 16000    // 采样率
 #define SAMPLE_BITS 32       // 采样位深
-#define NOISE_CHECK_INTERVAL 60000 // 每分钟检查一次噪声水平（毫秒）
+#define NOISE_CHECK_INTERVAL 5000 // 每5秒检查一次噪声水平（毫秒）
 #define HOURS_TO_KEEP 24     // 保存24小时数据
 
 // 噪声阈值设定
@@ -356,6 +108,7 @@ EnvironmentData envData[24 * 60]; // 存储24小时中每分钟的数据
 int dataIndex = 0;
 unsigned long lastDataRecordTime = 0; // Renamed from lastCheckTime for clarity
 unsigned long startTime = 0;
+volatile bool isRecording = false;  // 添加记录状态标志
 // Shared states (wifi, sd, time, led mode) are now managed by uiManager
 
 // 按键长按检测 (Keep for now, might integrate later)
@@ -414,9 +167,20 @@ hw_timer_t* watchdog = NULL;
 // 创建I2S麦克风管理器实例
 I2SMicManager micManager(SAMPLE_RATE, I2S_WS_PIN, I2S_SD_PIN, I2S_SCK_PIN, I2S_PORT_NUM);
 
-// 紧急内存预留
-uint8_t* emergencyMemory = nullptr;
-const size_t EMERGENCY_MEMORY_SIZE = 4096; // 4KB
+// 常量定义
+#define EMERGENCY_MEMORY_SIZE 4096  // 4KB 紧急内存
+
+// WiFi配置
+const char* ssid = "501_2.4G";
+const char* password = "12340000";
+
+// NTP配置
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 28800;
+const int daylightOffset_sec = 0;
+
+// 添加通信管理器实例
+CommunicationManager commManager;
 
 /**
  * 连接WiFi网络
@@ -641,16 +405,12 @@ void createHeaderIfNeeded() {
  * 存储到环境数据数组中
  */
 void recordEnvironmentData() {
-    static bool isRecording = false; // 防止重入
-    
-    // 防止函数重入（如果上一次调用还未完成）
     if (isRecording) {
-        Serial.println("警告: 数据记录进行中，跳过当前请求");
         return;
     }
     
     // 检查内存状态，如果不足，尝试释放紧急内存
-    if (isLowMemory(15000)) { // 使用15KB作为录制数据的安全阈值
+    if (isLowMemory(15000)) {
         releaseEmergencyMemory();
     }
     
@@ -670,7 +430,16 @@ void recordEnvironmentData() {
     try {
         // 使用新的I2SMicManager类读取噪声水平
         db = micManager.readNoiseLevel(500);
-        // 不需要额外验证，I2SMicManager已使用DataValidator
+        
+        // 检查是否检测到高噪声
+        if (micManager.isHighNoise()) {
+            // 立即更新LED显示
+            updateLEDs();
+            // 立即更新UI显示
+            uiManager.forceRedraw();
+            // 记录高噪声事件
+            Serial.printf("警告：检测到高噪声事件！噪声级别: %.1f dB\n", db);
+        }
 
         // 3. 读取温湿度数据
         // 增加更多安全检查，如果Si7021初始化失败则不尝试读取
@@ -1054,26 +823,25 @@ void IRAM_ATTR resetModule(void) {
  * 设置看门狗超时时间和回调函数
  */
 void setupWatchdog() {
-  // 使用ESP32 Arduino库3.2.0的API初始化定时器
-  // 第一个参数: 时钟频率(80MHz)
-  watchdog = timerBegin(80000000);
-  
-  // 附加中断处理函数
-  // 第一个参数: 定时器对象
-  // 第二个参数: 回调函数
-  timerAttachInterrupt(watchdog, &resetModule);
-  
-  // 设置计数器报警值
-  // 第一个参数: 定时器对象
-  // 第二个参数: 报警值(微秒)
-  // 第三个参数: 是否自动重载
-  // 第四个参数: 重载次数(0表示无限)
-  timerAlarm(watchdog, 8000000, false, 0);
-  
-  // 启用定时器
-  timerStart(watchdog);
-  
-  Serial.println("看门狗定时器已启用 (8秒超时)");
+    // 使用ESP32 Arduino库3.2.0的API初始化定时器
+    // 设置80MHz时钟频率
+    watchdog = timerBegin(80000000);
+    if (watchdog == nullptr) {
+        Serial.println("看门狗定时器初始化失败");
+        return;
+    }
+    
+    // 附加中断处理函数
+    timerAttachInterrupt(watchdog, &resetModule);
+    
+    // 设置报警值和启动定时器
+    // 8秒超时 = 8,000,000 微秒
+    timerAlarm(watchdog, 8000000, false, 0);
+    
+    // 启动定时器
+    timerStart(watchdog);
+    
+    Serial.println("看门狗定时器已启用 (8秒超时)");
 }
 
 /**
@@ -1106,166 +874,182 @@ void checkMemoryFragmentation() {
 // UI functions are now implemented in ui.cpp and declared in ui.h
 
 void setup() {
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("ESP32S3 环境监测器");
-  
-  // 检查启动时的内存状态
-  Serial.println("启动时内存状态检查:");
-  logMemoryStatus();
-  
-  // 分配紧急内存
-  emergencyMemory = (uint8_t*)malloc(EMERGENCY_MEMORY_SIZE);
-  if (emergencyMemory) {
-    Serial.printf("已预留 %d 字节紧急内存\n", EMERGENCY_MEMORY_SIZE);
-  } else {
-    Serial.println("警告：无法分配紧急内存！");
-  }
-  
-  // 初始化看门狗定时器
-  setupWatchdog();
-  
-  // 初始化按钮引脚
-  pinMode(BTN1_PIN, INPUT_PULLUP);
-  pinMode(BTN2_PIN, INPUT_PULLUP);
-  pinMode(BTN3_PIN, INPUT_PULLUP);
-  pinMode(BTN4_PIN, INPUT_PULLUP);
-  pinMode(BTN5_PIN, INPUT_PULLUP);
-  
-  // 初始化I2C (Using User Provided Pins)
-  Wire.begin(I2C_SDA, I2C_SCL);
-  Serial.printf("I2C已初始化: SDA=%d, SCL=%d\n", I2C_SDA, I2C_SCL);
-  
-  // 扫描I2C总线，检查可用设备
-  Serial.println("扫描I2C总线...");
-  byte error, address;
-  int deviceCount = 0;
-  
-  for (address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
-    
-    if (error == 0) {
-      Serial.printf("发现I2C设备，地址: 0x%02X", address);
-      
-      // 识别常见设备
-      if (address == 0x23) {
-        Serial.print(" (BH1750)");
-      } else if (address == 0x40) {
-        Serial.print(" (Si7021)");
-      }
-      
-      Serial.println();
-      deviceCount++;
+    // 添加异常处理
+    try {
+        Serial.begin(115200);
+        delay(1000);
+        Serial.println("ESP32S3 环境监测器");
+        
+        // 检查启动时的内存状态
+        Serial.println("启动时内存状态检查:");
+        logMemoryStatus();
+        
+        // 初始化紧急内存
+        if (!initEmergencyMemory()) {
+            ESP.restart();  // 如果无法分配内存，直接重启
+            return;
+        }
+        
+        // 初始化看门狗定时器
+        setupWatchdog();
+        
+        // 初始化按钮引脚
+        pinMode(BTN1_PIN, INPUT_PULLUP);
+        pinMode(BTN2_PIN, INPUT_PULLUP);
+        pinMode(BTN3_PIN, INPUT_PULLUP);
+        pinMode(BTN4_PIN, INPUT_PULLUP);
+        pinMode(BTN5_PIN, INPUT_PULLUP);
+        
+        // 初始化I2C (Using User Provided Pins)
+        Wire.begin(I2C_SDA, I2C_SCL);
+        Serial.printf("I2C已初始化: SDA=%d, SCL=%d\n", I2C_SDA, I2C_SCL);
+        
+        // 扫描I2C总线，检查可用设备
+        Serial.println("扫描I2C总线...");
+        byte error, address;
+        int deviceCount = 0;
+        
+        for (address = 1; address < 127; address++) {
+            Wire.beginTransmission(address);
+            error = Wire.endTransmission();
+            
+            if (error == 0) {
+                Serial.printf("发现I2C设备，地址: 0x%02X", address);
+                
+                // 识别常见设备
+                if (address == 0x23) {
+                    Serial.print(" (BH1750)");
+                } else if (address == 0x40) {
+                    Serial.print(" (Si7021)");
+                }
+                
+                Serial.println();
+                deviceCount++;
+            }
+        }
+        
+        if (deviceCount == 0) {
+            Serial.println("警告: 未发现任何I2C设备，请检查连接");
+        } else {
+            Serial.printf("发现 %d 个I2C设备\n", deviceCount);
+        }
+
+        // 初始化无源蜂鸣器引脚
+        pinMode(BUZZER_PIN, OUTPUT);
+        digitalWrite(BUZZER_PIN, LOW); // 确保蜂鸣器初始状态为关闭
+        
+        // 初始化Si7021（假设地址为0x40）
+        Serial.println("尝试初始化Si7021传感器...");
+        if (!si7021.begin()) {
+            Serial.println("Si7021传感器初始化失败");
+        } else {
+            Serial.println("Si7021传感器初始化成功");
+        }
+        
+        // 初始化BH1750 - 使用指定地址0x23
+        Serial.println("尝试初始化BH1750传感器...");
+        if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+            Serial.println("BH1750传感器初始化成功!");
+            float lux = lightMeter.readLightLevel();
+            Serial.printf("BH1750初始读数: %.2f lx\n", lux);
+        } else {
+            Serial.println("BH1750传感器初始化失败，请检查硬件连接");
+        }
+
+        // SD Card initialization will now use SDMMC mode based on provided pins.
+        // SPI configuration for SD card is removed.
+
+        // 连接WiFi和同步时间
+        connectToWiFi();
+        bool wifiStatus = (WiFi.status() == WL_CONNECTED);
+        uiManager.setWifiStatus(wifiStatus); // Update UIManager state
+        if (wifiStatus) {
+            initTime(); // initTime now updates UIManager state
+        }
+
+        // 初始化I2S (使用新的类)
+        Serial.println("尝试初始化I2S麦克风...");
+        Serial.printf("使用引脚配置: WS=%d, SD=%d, SCK=%d\n", I2S_WS_PIN, I2S_SD_PIN, I2S_SCK_PIN);
+        
+        if (micManager.begin()) {
+            Serial.println("I2S麦克风初始化成功 (使用新的I2SMicManager类)");
+            
+            // 进行测试读取尝试
+            float initialDb = micManager.readNoiseLevel(1000);
+            Serial.printf("初始噪声读数: %.2f dB\n", initialDb);
+            
+        } else {
+            Serial.println("I2SMicManager初始化失败，尝试使用备用方法...");
+            // 如果新类初始化失败，尝试使用原始方法作为备用
+            i2s_config();
+            
+            // 测试直接从I2S读取
+            int32_t buffer[128] = {0};
+            size_t bytes_read = 0;
+            i2s_channel_read(rx_handle, buffer, sizeof(buffer), &bytes_read, 1000);
+            Serial.printf("备用初始化后直接读取: 读取了 %d 字节\n", bytes_read);
+        }
+
+        // 初始化SD卡
+        bool sdStatus = initSDCard();
+        uiManager.setSdCardStatus(sdStatus); // Update UIManager state
+        if (sdStatus) {
+            createHeaderIfNeeded();
+        } else {
+            Serial.println("警告：无法初始化SD卡，数据将不会被永久保存");
+        }
+
+        // 获取启动时间
+        startTime = millis();
+        lastDataRecordTime = startTime; // Initialize data recording timer
+        lastMemoryLog = startTime; // 初始化内存记录时间
+        // lastDisplayUpdateTime is managed by UIManager
+
+        // 初始化LED (Set initial mode in UIManager constructor)
+        pixels.begin();
+        pixels.clear();
+        pixels.show();
+        
+        // 初始化显示屏
+        tft.init();
+        tft.setRotation(3); // 根据需要调整屏幕方向（0-3）
+        tft.fillScreen(TFT_BLACK);
+        
+        // 设置背光
+        pinMode(TFT_BL, OUTPUT);
+        digitalWrite(TFT_BL, HIGH);
+
+        // Run startup animation (Re-added)
+        runStartupAnimation(tft, 1500); // Pass tft object, run for 1.5 seconds
+
+        // --- Setup UI Manager ---
+        uiManager.addScreen(&mainScreen);
+        uiManager.addScreen(&noiseScreen);
+        uiManager.addScreen(&tempHumScreen);
+        uiManager.addScreen(&lightScreen);
+        uiManager.addScreen(&statusScreen);
+        uiManager.setInitialScreen(); // Sets the first screen and triggers initial draw via update()
+        // --- End Setup UI Manager ---
+
+        // 在WiFi连接后初始化通信管理器
+        if (WiFi.status() == WL_CONNECTED) {
+            if (commManager.begin()) {
+                Serial.println("通信管理器初始化成功");
+            } else {
+                Serial.println("通信管理器初始化失败");
+            }
+        }
+
+        Serial.println("系统初始化完成!");
+        // 再次检查初始化后内存状态
+        logMemoryStatus();
+    } catch (const std::exception& e) {
+        Serial.printf("设置过程中发生异常: %s\n", e.what());
+        ESP.restart();
+    } catch (...) {
+        Serial.println("设置过程中发生未知异常");
+        ESP.restart();
     }
-  }
-  
-  if (deviceCount == 0) {
-    Serial.println("警告: 未发现任何I2C设备，请检查连接");
-  } else {
-    Serial.printf("发现 %d 个I2C设备\n", deviceCount);
-  }
-
-  // 初始化无源蜂鸣器引脚
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW); // 确保蜂鸣器初始状态为关闭
-  
-  // 初始化Si7021（假设地址为0x40）
-  Serial.println("尝试初始化Si7021传感器...");
-  if (!si7021.begin()) {
-    Serial.println("Si7021传感器初始化失败");
-  } else {
-    Serial.println("Si7021传感器初始化成功");
-  }
-  
-  // 初始化BH1750 - 使用指定地址0x23
-  Serial.println("尝试初始化BH1750传感器...");
-  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
-    Serial.println("BH1750传感器初始化成功!");
-    float lux = lightMeter.readLightLevel();
-    Serial.printf("BH1750初始读数: %.2f lx\n", lux);
-  } else {
-    Serial.println("BH1750传感器初始化失败，请检查硬件连接");
-  }
-
-  // SD Card initialization will now use SDMMC mode based on provided pins.
-  // SPI configuration for SD card is removed.
-
-  // 连接WiFi和同步时间
-  connectToWiFi();
-  bool wifiStatus = (WiFi.status() == WL_CONNECTED);
-  uiManager.setWifiStatus(wifiStatus); // Update UIManager state
-  if (wifiStatus) {
-    initTime(); // initTime now updates UIManager state
-  }
-
-  // 初始化I2S (使用新的类)
-  Serial.println("尝试初始化I2S麦克风...");
-  Serial.printf("使用引脚配置: WS=%d, SD=%d, SCK=%d\n", I2S_WS_PIN, I2S_SD_PIN, I2S_SCK_PIN);
-  
-  if (micManager.begin()) {
-    Serial.println("I2S麦克风初始化成功 (使用新的I2SMicManager类)");
-    
-    // 进行测试读取尝试
-    float initialDb = micManager.readNoiseLevel(1000);
-    Serial.printf("初始噪声读数: %.2f dB\n", initialDb);
-    
-  } else {
-    Serial.println("I2SMicManager初始化失败，尝试使用备用方法...");
-    // 如果新类初始化失败，尝试使用原始方法作为备用
-    i2s_config();
-    
-    // 测试直接从I2S读取
-    int32_t buffer[128] = {0};
-    size_t bytes_read = 0;
-    i2s_channel_read(rx_handle, buffer, sizeof(buffer), &bytes_read, 1000);
-    Serial.printf("备用初始化后直接读取: 读取了 %d 字节\n", bytes_read);
-  }
-
-  // 初始化SD卡
-  bool sdStatus = initSDCard();
-  uiManager.setSdCardStatus(sdStatus); // Update UIManager state
-  if (sdStatus) {
-    createHeaderIfNeeded();
-  } else {
-    Serial.println("警告：无法初始化SD卡，数据将不会被永久保存");
-  }
-
-  // 获取启动时间
-  startTime = millis();
-  lastDataRecordTime = startTime; // Initialize data recording timer
-  lastMemoryLog = startTime; // 初始化内存记录时间
-  // lastDisplayUpdateTime is managed by UIManager
-
-  // 初始化LED (Set initial mode in UIManager constructor)
-  pixels.begin();
-  pixels.clear();
-  pixels.show();
-  
-  // 初始化显示屏
-  tft.init();
-  tft.setRotation(3); // 根据需要调整屏幕方向（0-3）
-  tft.fillScreen(TFT_BLACK);
-  
-  // 设置背光
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
-
-  // Run startup animation (Re-added)
-  runStartupAnimation(tft, 1500); // Pass tft object, run for 1.5 seconds
-
-  // --- Setup UI Manager ---
-  uiManager.addScreen(&mainScreen);
-  uiManager.addScreen(&noiseScreen);
-  uiManager.addScreen(&tempHumScreen);
-  uiManager.addScreen(&lightScreen);
-  uiManager.addScreen(&statusScreen);
-  uiManager.setInitialScreen(); // Sets the first screen and triggers initial draw via update()
-  // --- End Setup UI Manager ---
-
-  Serial.println("系统初始化完成!");
-  // 再次检查初始化后内存状态
-  logMemoryStatus();
 }
 
 // 优雅退出清理函数
@@ -1274,12 +1058,6 @@ void cleanup() {
   
   // 关闭I2S麦克风
   micManager.end();
-  
-  // 释放紧急内存
-  if (emergencyMemory != nullptr) {
-    free(emergencyMemory);
-    emergencyMemory = nullptr;
-  }
   
   // 保存剩余数据到SD卡
   if (dataIndex > 0 && uiManager.isSdCardInitialized()) {
@@ -1311,50 +1089,104 @@ void handleSystemExit() {
 }
 
 void loop() {
-    // 重置看门狗定时器 (喂狗)
-    timerWrite(watchdog, 0);
-    
-    unsigned long currentMillis = millis();
-
-    // --- 1. 检查数据是否需要保存到SD卡（缓冲区已满） ---
-    if (dataIndex >= (sizeof(envData) / sizeof(envData[0]))) {
-        if (uiManager.isSdCardInitialized()) {
-            saveEnvironmentDataToSD();
-        } else {
-            dataIndex = 0; // 如果没有SD卡，简单地循环覆盖
+    try {
+        // 重置看门狗定时器 (喂狗)
+        timerWrite(watchdog, 0);
+        
+        unsigned long currentMillis = millis();
+        
+        // 检查堆内存是否严重不足
+        if (ESP.getFreeHeap() < 4096) { // 如果可用内存小于4KB
+            Serial.println("警告：内存严重不足，尝试释放紧急内存");
+            releaseEmergencyMemory();
+            if (ESP.getFreeHeap() < 4096) {
+                Serial.println("错误：内存仍然不足，准备重启");
+                cleanup();
+                ESP.restart();
+                return;
+            }
         }
-    }
-
-    // --- 2. 检查是否需要定期采集数据 ---
-    if (currentMillis - lastDataRecordTime >= NOISE_CHECK_INTERVAL) {
-        lastDataRecordTime = currentMillis;
         
-        // 读取传感器数据
-        recordEnvironmentData();
+        // --- 1. 检查数据是否需要保存到SD卡（缓冲区已满或达到保存间隔） ---
+        static unsigned long lastSaveTime = 0;
+        const unsigned long SAVE_INTERVAL = 300000; // 每5分钟保存一次数据
         
-        // 更新LED显示
-        updateLEDs();
+        if (dataIndex >= (sizeof(envData) / sizeof(envData[0])) || 
+            (dataIndex > 0 && currentMillis - lastSaveTime >= SAVE_INTERVAL)) {
+            if (uiManager.isSdCardInitialized()) {
+                saveEnvironmentDataToSD();
+                lastSaveTime = currentMillis;
+            } else {
+                if (dataIndex >= (sizeof(envData) / sizeof(envData[0]))) {
+                    dataIndex = 0; // 如果没有SD卡且缓冲区满，则循环覆盖
+                }
+            }
+        }
+
+        // --- 2. 检查是否需要采集数据 ---
+        if (currentMillis - lastDataRecordTime >= NOISE_CHECK_INTERVAL) {
+            lastDataRecordTime = currentMillis;
+            
+            // 读取传感器数据
+            recordEnvironmentData();
+            
+            // 如果WiFi已连接且通信管理器在运行，广播最新数据
+            if (WiFi.status() == WL_CONNECTED && commManager.isServerRunning()) {
+                Serial.println("准备发送环境数据到上位机...");
+                if (dataIndex > 0) {
+                    EnvironmentData currentData = envData[dataIndex - 1];
+                    Serial.printf("当前数据: 噪声=%.1f dB, 温度=%.1f °C, 湿度=%.1f %%, 光照=%.1f lx\n",
+                        currentData.decibels, currentData.temperature, currentData.humidity, currentData.lux);
+                    commManager.broadcastEnvironmentData(currentData);
+                } else {
+                    Serial.println("警告：没有可用的环境数据");
+                }
+            } else {
+                if (WiFi.status() != WL_CONNECTED) {
+                    Serial.println("WiFi未连接，无法发送数据");
+                }
+                if (!commManager.isServerRunning()) {
+                    Serial.println("通信管理器未运行，无法发送数据");
+                }
+            }
+            
+            // 更新LED显示
+            updateLEDs();
+            
+            // 通知UI更新
+            uiManager.forceRedraw();
+        }
         
-        // 通知UI更新
-        uiManager.forceRedraw();
-    }
-    
-    // --- 3. 定期记录内存使用情况 ---
-    if (currentMillis - lastMemoryLog >= MEMORY_LOG_INTERVAL) {
-        lastMemoryLog = currentMillis;
-        logMemoryStatus();
-    }
-    
-    // --- 4. 检查内存分片情况 ---
-    if (currentMillis - lastFragCheck >= FRAG_CHECK_INTERVAL) {
-        lastFragCheck = currentMillis;
-        checkMemoryFragmentation();
-    }
+        // --- 3. 定期记录内存使用情况 ---
+        if (currentMillis - lastMemoryLog >= MEMORY_LOG_INTERVAL) {
+            lastMemoryLog = currentMillis;
+            logMemoryStatus();
+        }
+        
+        // --- 4. 检查内存分片情况 ---
+        if (currentMillis - lastFragCheck >= FRAG_CHECK_INTERVAL) {
+            lastFragCheck = currentMillis;
+            checkMemoryFragmentation();
+        }
 
-    // --- 5. 处理按钮输入和UI更新 ---
-    checkButtons();
-    uiManager.update();
+        // --- 5. 处理按钮输入和UI更新 ---
+        checkButtons();
+        uiManager.update();
 
-    // --- 6. 短暂延迟 ---
-    delay(10);
+        // --- 6. 更新通信管理器 ---
+        if (WiFi.status() == WL_CONNECTED) {
+            commManager.update();
+        }
+
+        // --- 7. 短暂延迟 ---
+        delay(5); // 减少延迟时间以提高响应速度
+    } catch (const std::exception& e) {
+        Serial.printf("主循环中发生异常: %s\n", e.what());
+        delay(1000);
+        ESP.restart();
+    } catch (...) {
+        Serial.println("主循环中发生未知异常");
+        delay(1000);
+        ESP.restart();
+    }
 }

@@ -4,18 +4,10 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <time.h> // Needed for time_t
+#include "EnvironmentData.h" // Include the environment data structure
 
 // Forward declaration of UIManager to avoid circular dependency
 class UIManager;
-
-// Define environment data structure here (moved from ui.h)
-struct EnvironmentData {
-    time_t timestamp;    // 时间戳
-    float temperature;   // 温度
-    float humidity;      // 湿度
-    float decibels;      // 分贝值
-    float lux;          // 光照强度
-};
 
 class Screen {
 public:
@@ -52,7 +44,12 @@ protected:
             return envDataPtr[dataIndex - 1];
         }
         // Return a default/dummy object if no data yet
-        static EnvironmentData dummyData = {0, -999.0f, -1.0f, 0.0f, -1.0f};
+        static EnvironmentData dummyData;
+        dummyData.timestamp = 0;
+        dummyData.decibels = 0.0f;
+        dummyData.humidity = -1.0f;
+        dummyData.temperature = -999.0f;
+        dummyData.lux = -1.0f;
         return dummyData;
     }
 };

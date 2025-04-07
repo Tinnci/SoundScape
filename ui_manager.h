@@ -1,8 +1,10 @@
 #ifndef UI_MANAGER_H
 #define UI_MANAGER_H
 
-#include <vector>
+#include <Arduino.h>
+#include <TFT_eSPI.h>
 #include "screen.h" // Needs Screen base class definition
+#include "memory_utils.h"
 
 // Define button pins used by UIManager for navigation
 // (Moved from sketch_mar18b.ino)
