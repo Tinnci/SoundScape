@@ -117,9 +117,9 @@ public:
      */
     I2SMicManager(uint32_t sample_rate = 16000, 
                  uint8_t ws_pin = 16, 
-                 uint8_t sd_pin = 15, 
-                 uint8_t sck_pin = 17,
-                 i2s_port_t port_num = I2S_NUM_0) :
+                 uint8_t sd_pin = 17, 
+                 uint8_t sck_pin = 15,
+                 i2s_port_t port_num = I2S_PORT_NUM) :
         sample_rate_(sample_rate),
         ws_pin_(ws_pin),
         sd_pin_(sd_pin),
@@ -221,12 +221,23 @@ public:
             return 0.0f;
         }
         
+        // 添加调试信息
+        Serial.printf("I2S读取成功: 读取了 %d 字节, %d 个样本\n", bytes_read, bytes_read / sizeof(int32_t));
+        
         // 计算分贝值
         double sum = 0;
         size_t validSamples = bytes_read / sizeof(int32_t);
         validSamples = min(validSamples, BUFFER_SIZE); // 额外安全检查
         
-        for (size_t i = 0; i < validSamples; i++) {
+        // 打印前几个样本值用于调试
+        Serial.println("样本值示例:");
+        for (size_t i = 0; i < min(validSamples, (size_t)10); i++) {
+            int32_t sample = samples_[i] >> 8; // 转换为24位格式
+            Serial.printf("  样本[%d] = %d\n", i, sample);
+            sum += sample * sample;
+        }
+        
+        for (size_t i = 10; i < validSamples; i++) {
             int32_t sample = samples_[i] >> 8; // 转换为24位格式
             sum += sample * sample;
         }
@@ -236,11 +247,24 @@ public:
         }
         
         double rms = sqrt(sum / validSamples);
-        const double refLevel = 1.0;
+        // 调整参考电平，INMP441通常需要较小的参考电平
+        const double refLevel = 0.1;
+        // 调整计算方法
         float db = 20 * log10(rms / refLevel);
         
+        // 如果计算结果是负无穷（当rms接近0时），设置一个最小值
+        if (isinf(db) && db < 0) {
+            db = 0.0f;
+        }
+        
+        // 输出计算过程
+        Serial.printf("RMS值: %.2f, 参考电平: %.2f, 原始分贝值: %.2f\n", rms, refLevel, db);
+        
         // 使用DataValidator验证分贝值
-        return DataValidator::validateDecibels(db);
+        float validated_db = DataValidator::validateDecibels(db);
+        Serial.printf("验证后分贝值: %.2f\n", validated_db);
+        
+        return validated_db;
     }
     
     /**
@@ -276,8 +300,8 @@ const int   daylightOffset_sec = 0; // 夏令时偏移量，中国不使用夏�
 // GPIO定义
 // I2S麦克风引脚
 #define I2S_WS_PIN 16     // Word Select (WS)
-#define I2S_SD_PIN 15     // Serial Data (SD)
-#define I2S_SCK_PIN 17    // Serial Clock (SCK)
+#define I2S_SD_PIN 17     // Serial Data (SD)
+#define I2S_SCK_PIN 15    // Serial Clock (SCK)
 #define I2S_PORT_NUM I2S_NUM_0 // Use I2S port 0
 
 // SD卡引脚
@@ -493,6 +517,8 @@ void i2s_config() {
 
         ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle, &std_cfg));
         ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));
+        
+        Serial.println("I2S备用初始化完成，使用引脚: SCK=" + String(I2S_SCK_PIN) + ", WS=" + String(I2S_WS_PIN) + ", SD=" + String(I2S_SD_PIN));
     }
     
     Serial.println("I2S初始化完成");
@@ -1166,11 +1192,26 @@ void setup() {
   }
 
   // 初始化I2S (使用新的类)
+  Serial.println("尝试初始化I2S麦克风...");
+  Serial.printf("使用引脚配置: WS=%d, SD=%d, SCK=%d\n", I2S_WS_PIN, I2S_SD_PIN, I2S_SCK_PIN);
+  
   if (micManager.begin()) {
     Serial.println("I2S麦克风初始化成功 (使用新的I2SMicManager类)");
+    
+    // 进行测试读取尝试
+    float initialDb = micManager.readNoiseLevel(1000);
+    Serial.printf("初始噪声读数: %.2f dB\n", initialDb);
+    
   } else {
+    Serial.println("I2SMicManager初始化失败，尝试使用备用方法...");
     // 如果新类初始化失败，尝试使用原始方法作为备用
     i2s_config();
+    
+    // 测试直接从I2S读取
+    int32_t buffer[128] = {0};
+    size_t bytes_read = 0;
+    i2s_channel_read(rx_handle, buffer, sizeof(buffer), &bytes_read, 1000);
+    Serial.printf("备用初始化后直接读取: 读取了 %d 字节\n", bytes_read);
   }
 
   // 初始化SD卡

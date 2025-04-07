@@ -49,11 +49,17 @@ public:
     /**
      * 验证分贝值
      * @param value 原始分贝值
-     * @return 验证后的分贝值，始终返回有效值
+     * @return 验证后的分贝值
      */
     static float validateDecibels(float value) {
-        if (isnan(value) || value < DB_MIN) {
-            return 0.0f; // 无效或小于最小值，返回0
+        // 只有当值为NaN或严重异常的负值时才设为0
+        if (isnan(value) || value < -50.0f) {
+            Serial.println("警告: 检测到异常分贝值，设置为0");
+            return 0.0f;
+        }
+        // 小于最小可能值但大于严重异常值时，设置为最小有效值
+        if (value < DB_MIN) {
+            return DB_MIN;
         }
         if (value > DB_MAX) {
             return DB_MAX; // 超过最大值，返回最大值
