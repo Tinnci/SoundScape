@@ -152,23 +152,23 @@ public:
                 .mclk_multiple = I2S_MCLK_MULTIPLE_256,
             },
             .slot_cfg = {
-                .data_bit_width = I2S_DATA_BIT_WIDTH_32BIT,
-                .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+                .data_bit_width = I2S_DATA_BIT_WIDTH_24BIT,  // 改为24位以匹配INMP441
+                .slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT,  // 保持32位槽宽
                 .slot_mode = I2S_SLOT_MODE_MONO,
                 .slot_mask = I2S_STD_SLOT_LEFT,
                 .ws_width = 1,
                 .ws_pol = false,
-                .bit_shift = false,
+                .bit_shift = true,                           // 启用位移以正确对齐数据
                 .left_align = false,
                 .big_endian = false,
                 .bit_order_lsb = false,
             },
             .gpio_cfg = {
                 .mclk = I2S_GPIO_UNUSED,
-                .bclk = (gpio_num_t)sck_pin_,
-                .ws = (gpio_num_t)ws_pin_,
+                .bclk = (gpio_num_t)sck_pin_,  // SCK
+                .ws = (gpio_num_t)ws_pin_,     // WS
                 .dout = I2S_GPIO_UNUSED,
-                .din = (gpio_num_t)sd_pin_,
+                .din = (gpio_num_t)sd_pin_,    // SD
                 .invert_flags = {
                     .mclk_inv = false,
                     .bclk_inv = false,
@@ -232,13 +232,21 @@ public:
         // 打印前几个样本值用于调试
         Serial.println("样本值示例:");
         for (size_t i = 0; i < min(validSamples, (size_t)10); i++) {
-            int32_t sample = samples_[i] >> 8; // 转换为24位格式
+            int32_t sample = samples_[i];
+            // 将24位有符号数扩展为32位
+            if (sample & 0x800000) {
+                sample |= 0xFF000000;
+            }
             Serial.printf("  样本[%d] = %d\n", i, sample);
             sum += sample * sample;
         }
         
         for (size_t i = 10; i < validSamples; i++) {
-            int32_t sample = samples_[i] >> 8; // 转换为24位格式
+            int32_t sample = samples_[i];
+            // 将24位有符号数扩展为32位
+            if (sample & 0x800000) {
+                sample |= 0xFF000000;
+            }
             sum += sample * sample;
         }
         
