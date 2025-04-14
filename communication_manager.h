@@ -3,12 +3,15 @@
 
 #include <WiFi.h>
 #include <vector>
+#include <time.h>
 #include "EnvironmentData.h"
 #include "i2s_mic_manager.h"
 #include <ESPAsyncWebServer.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+
+class UIManager;
 
 class CommunicationManager {
 private:
@@ -28,12 +31,23 @@ private:
     bool isRunning;
     EnvironmentData currentData;
     I2SMicManager* micManagerPtr;
+    UIManager* uiManagerPtr_;
 
     // Mutex for protecting audioWsClients vector
     SemaphoreHandle_t audioClientsMutex;
 
+    // Network Configuration (Moved from .ino)
+    const char* wifiSsid_;
+    const char* wifiPassword_;
+    const char* ntpServer_;
+    long gmtOffsetSec_;
+    int daylightOffsetSec_;
+
 public:
-    CommunicationManager(I2SMicManager* micMgr);
+    CommunicationManager(I2SMicManager* micMgr, UIManager* uiMgr,
+                         const char* ssid, const char* password,
+                         const char* ntpServer = "pool.ntp.org",
+                         long gmtOffset = 28800, int daylightOffset = 0);
     ~CommunicationManager();
 
     // Command server methods
@@ -50,6 +64,14 @@ public:
 
     // WebSocket Audio Streaming Method
     void streamAudioViaWebSocket();
+
+    // --- Network Management Methods ---
+    bool connectWiFi();         // Tries to connect to WiFi
+    bool syncNTPTime();       // Tries to sync NTP time
+    bool reconnectWiFi();     // Disconnects, connects, syncs time
+    bool isWiFiConnected() const; // Checks current WiFi status
+    String getIPAddress() const;  // Gets local IP address
+    // --- End Network Management ---
 
 private:
     // Command handling helpers

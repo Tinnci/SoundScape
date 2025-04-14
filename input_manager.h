@@ -35,9 +35,6 @@ private:
     UIManager& uiManager_;
     DataManager& dataManager_;
     CommunicationManager& commManager_; // Store reference to CommManager
-
-    // Helper function to reconnect WiFi (might need access to SSID/Pass or a method in CommManager)
-    void reconnectWiFi();
 };
 
 #endif // INPUT_MANAGER_H 

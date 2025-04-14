@@ -1,9 +1,9 @@
 #include "input_manager.h"
 #include "ui_manager.h"
 #include "data_manager.h"
-#include "communication_manager.h" // Include full header for CommManager methods if needed
-#include <WiFi.h> // Needed for WiFi.status()
-#include <time.h> // Needed for initTime() simulation
+#include "communication_manager.h" // Include full header for CommManager methods
+#include <WiFi.h> // Needed for WiFi.status() - Can be removed now
+#include <time.h> // Needed for initTime() simulation - Can be removed now
 
 // Constructor
 InputManager::InputManager(UIManager& uiMgr, DataManager& dataMgr, CommunicationManager& commMgr) :
@@ -95,7 +95,8 @@ void InputManager::update() {
                      case 2: // BTN3 (Down) - No long press action defined
                          break;
                      case 3: // BTN4 (Left - Reconnect WiFi)
-                         reconnectWiFi();
+                         // Call CommunicationManager method
+                         commManager_.reconnectWiFi();
                          break;
                      case 4: // BTN5 (Center - Restart)
                          Serial.println("[InputManager] Restarting via Button 5 long press...");
@@ -112,19 +113,20 @@ void InputManager::update() {
     }
 }
 
-// Helper function to reconnect WiFi
+// Remove the implementation of reconnectWiFi
+/*
 void InputManager::reconnectWiFi() {
     // This function needs the actual logic to connect to WiFi.
     // It might involve calling methods in CommunicationManager or directly using WiFi library.
     // For now, simulate the process and update UIManager status.
     Serial.println("[InputManager] Attempting to reconnect WiFi...");
 
-    // --- Placeholder for actual WiFi connection logic --- 
+    // --- Placeholder for actual WiFi connection logic ---
     // Example (replace with actual implementation):
     WiFi.disconnect(true); // Optional: disconnect first
     delay(100);
     WiFi.begin("501_2.4G", "12340000"); // Use actual SSID/Password (Ideally from config)
-    
+
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 20) {
         delay(500);
@@ -132,7 +134,7 @@ void InputManager::reconnectWiFi() {
         attempts++;
     }
     Serial.println();
-    // --- End Placeholder --- 
+    // --- End Placeholder ---
 
     bool wifiStatus = (WiFi.status() == WL_CONNECTED);
     if (wifiStatus) {
@@ -157,4 +159,5 @@ void InputManager::reconnectWiFi() {
     // Update UIManager WiFi status regardless of success/failure
     uiManager_.setWifiStatus(wifiStatus);
     uiManager_.forceRedraw(); // Force UI update to show status change
-} 
+}
+*/ 

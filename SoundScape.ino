@@ -17,8 +17,6 @@
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <time.h>
 #include <Wire.h>
 #include <TFT_eSPI.h>
 #include <ESPAsyncWebServer.h>
@@ -86,14 +84,12 @@
 // --- Configuration ---
 #define SAMPLE_RATE 16000    // 采样率 (Used by I2SMicManager)
 
-// WiFi配置
-const char* ssid = "501_2.4G";
-const char* password = "12340000";
-
-// NTP配置
-const char* ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = 28800;
-const int daylightOffset_sec = 0;
+// WiFi & NTP Configuration (Now passed to CommunicationManager)
+const char* WIFI_SSID = "501_2.4G";
+const char* WIFI_PASSWORD = "12340000";
+const char* NTP_SERVER = "pool.ntp.org";
+const long GMT_OFFSET_SEC = 28800;
+const int DAYLIGHT_OFFSET_SEC = 0;
 
 // --- Global Objects / Instances ---
 TFT_eSPI tft = TFT_eSPI(); // TFT instance
@@ -109,8 +105,8 @@ LightSensor lightSensor; // Uses default address 0x23
 // Data Manager (depends on sensors and UI Manager)
 DataManager dataManager(micManager, tempHumSensor, lightSensor, uiManager);
 
-// Communication Manager (depends on micManager for audio streaming)
-CommunicationManager commManager(&micManager);
+// Communication Manager (Pass network config and UIManager reference)
+CommunicationManager commManager(&micManager, &uiManager, WIFI_SSID, WIFI_PASSWORD, NTP_SERVER, GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC);
 
 // Input Manager (depends on UI Manager, Data Manager, Comm Manager)
 InputManager inputManager(uiManager, dataManager, commManager);
@@ -118,25 +114,15 @@ InputManager inputManager(uiManager, dataManager, commManager);
 // LED Controller (depends on UI Manager and Data Manager)
 LedController ledController(uiManager, dataManager);
 
-// Web Server (depends on commManager being set up)
+// Web Server (passed to commManager for setup)
 AsyncWebServer httpServer(80);
 
 // Screens (depend on tft, dataManager providing data access)
-// Note: Screens now get data via dataManager.getLatestData() or buffer access.
-// We need to adjust Screen base class and screen implementations later if they directly used envData/dataIndex.
-// For now, assume they use getLatestData() provided by the (modified) base class.
-// We pass dataManager reference now, or modify Screen class later.
-// Let's pass dataManager for now.
-// UPDATE: Screen class already uses envDataPtr and dataIndex ref. We need to change Screen class to accept DataManager*.
-// Let's adjust Screen class first. (Will do this in a separate step if needed, assume it's adjusted for now)
-// UPDATE 2: Screens only need the latest data for drawing. Pass dataManager and let screens call getLatestData().
-// MainScreen mainScreen(tft, envData, dataIndex); <-- OLD
-MainScreen mainScreen(tft, dataManager); // <-- NEW (Requires screen constructor change)
+MainScreen mainScreen(tft, dataManager);
 NoiseScreen noiseScreen(tft, dataManager);
 TempHumScreen tempHumScreen(tft, dataManager);
 LightScreen lightScreen(tft, dataManager);
 StatusScreen statusScreen(tft, dataManager);
-// IMPORTANT: Need to modify Screen base class and all derived screen constructors and getLatestData() usage.
 
 // Watchdog Timer
 hw_timer_t* watchdog = NULL;
@@ -144,64 +130,9 @@ hw_timer_t* watchdog = NULL;
 // Memory Monitoring Variables
 unsigned long lastMemoryLog = 0;
 const unsigned long MEMORY_LOG_INTERVAL = 600000; // 10 minutes
-// const unsigned long FRAG_CHECK_INTERVAL = 1800000; // 30 minutes (Can be added back if needed)
 
-// --- Function Declarations (Moved or Removed) ---
-// connectToWiFi, initTime, i2s_config, initSDCard, saveEnvironmentDataToSD, createHeaderIfNeeded
-// recordEnvironmentData, displayRecentData, checkButtons, updateLEDs are removed or moved.
-
-// --- Helper Functions (Kept in .ino for now) ---
-
-/**
- * Connects to WiFi. Updates UIManager status.
- */
-void connectToWiFi() {
-  Serial.println("正在连接WiFi...");
-  WiFi.begin(ssid, password);
-  
-  const int MAX_ATTEMPTS = 20;
-  for (int attempts = 0; attempts < MAX_ATTEMPTS && WiFi.status() != WL_CONNECTED; attempts++) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-  
-  bool connected = (WiFi.status() == WL_CONNECTED);
-  if (connected) {
-    Serial.println("WiFi已连接");
-    Serial.print("IP地址: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("WiFi连接失败！");
-  }
-  uiManager.setWifiStatus(connected); // Update UIManager
-}
-
-/**
- * Initializes NTP time synchronization. Updates UIManager status.
- */
-void initTime() {
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("正在同步NTP时间...");
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-    
-    struct tm timeinfo;
-    bool success = getLocalTime(&timeinfo);
-    if (!success) {
-      Serial.println("获取NTP时间失败");
-    } else {
-      Serial.println("NTP时间同步成功");
-      char timeString[50];
-      strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", &timeinfo);
-      Serial.print("当前时间: ");
-      Serial.println(timeString);
-    }
-     uiManager.setTimeStatus(success); // Update UIManager
-  } else {
-      Serial.println("WARN: WiFi未连接，跳过NTP同步。");
-      uiManager.setTimeStatus(false); // Ensure state is false
-  }
-}
+// --- Helper Functions (Moved or Removed) ---
+// connectToWiFi and initTime removed
 
 /**
  * Logs memory status to Serial.
@@ -241,8 +172,10 @@ void setupWatchdog() {
         return;
     }
     timerAttachInterrupt(watchdog, &resetModule);
-    timerAlarm(watchdog, 8000000, true, 0); // NEW - Added reload_count=0
-    // timerAlarmEnable(watchdog); // Enable the alarm (ESP-IDF style, check if needed for Arduino)
+    // Set alarm for 8 seconds, auto-reload=true, reload_count=0 (ESP-IDF v5.x style)
+    timerAlarm(watchdog, 8000000, true, 0);
+    // timerAlarmEnable is deprecated/not needed in ESP-IDF v5.x Arduino Core
+    // timerAlarmEnable(watchdog);
     timerStart(watchdog); // Start the timer
     Serial.println("看门狗定时器已启用 (8秒超时)");
 }
@@ -256,10 +189,9 @@ void cleanup() {
   if (dataManager.isSdCardInitialized()) { // Use DataManager to check SD status
      dataManager.saveDataToSd(); // Save remaining data
   }
-  SD_MMC.end(); // Unmount SD
-  commManager.stop(); // Stop TCP server
-  // Stop WebSocket/HTTP server? Need commManager method.
-  httpServer.end();
+  // SD_MMC.end(); // Consider if DataManager should handle SD unmount? Keep here for now.
+  commManager.stop(); // Stop TCP/WebSocket clients/server
+  httpServer.end();   // Stop HTTP server
 
   // Clear display
   tft.fillScreen(TFT_BLACK);
@@ -303,7 +235,7 @@ void setup() {
         // --- Manager Initializations ---
         Serial.println("--- Initializing Managers ---");
         if (micManager.begin()) {
-            Serial.printf("初始噪声读数: %.2f dB\n", micManager.readNoiseLevel(500));
+            Serial.printf("初始噪声读数: %.2f dB\n", micManager.readNoiseLevel(50)); // Use updated timeout
         } else {
             Serial.println("ERR: I2S Mic Manager 初始化失败!");
         }
@@ -318,25 +250,27 @@ void setup() {
         inputManager.begin();    // Initializes button pins
         ledController.begin();   // Initializes NeoPixels
 
-        // --- Network Initialization ---
+        // --- Network Initialization (using CommunicationManager) ---
         Serial.println("--- Initializing Network ---");
-        connectToWiFi(); // Updates uiManager status internally
-        if (uiManager.isWifiConnected()) {
-            initTime(); // Updates uiManager status internally
+        if (commManager.connectWiFi()) { // Try connecting (updates UI status internally)
+             commManager.syncNTPTime(); // Try syncing time (updates UI status internally)
 
-            // Start Communication Services (Requires WiFi)
-            if (commManager.begin()) { // Start TCP command server
-                 Serial.println("命令服务器初始化成功 (TCP Port 8266)");
-            } else {
-                 Serial.println("命令服务器初始化失败");
-            }
-            // Setup and start HTTP/WebSocket server
-            commManager.setupHttpServer(&httpServer);
-            commManager.setupWebSocketServer(&httpServer);
-            httpServer.begin();
-            Serial.println("HTTP 和 WebSocket 服务器已启动 (Port 80)");
+             // Start Communication Servers (Requires WiFi)
+             if (commManager.begin()) { // Start TCP command server
+                  Serial.println("Communication servers (TCP/WebSocket) potentially started.");
+                  // Setup HTTP/WebSocket server handlers via commManager
+                  commManager.setupHttpServer(&httpServer);
+                  commManager.setupWebSocketServer(&httpServer);
+                  httpServer.begin(); // Start the actual AsyncWebServer
+                  Serial.println("HTTP 和 WebSocket 服务器已启动 (Port 80)");
+             } else {
+                  Serial.println("Communication servers failed to start (likely WiFi issue during check).");
+             }
         } else {
-            Serial.println("WARN: WiFi 未连接，网络服务未启动。");
+             Serial.println("WARN: WiFi 未连接，网络服务未启动。");
+             // Ensure time status is false if WiFi failed initially
+             uiManager.setTimeStatus(false);
+             uiManager.forceRedraw();
         }
 
 

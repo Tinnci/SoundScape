@@ -1,4 +1,5 @@
 #include "communication_manager.h"
+#include "ui_manager.h"
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <algorithm>
@@ -10,12 +11,20 @@ CommunicationManager* globalCommManagerPtr = nullptr;
 #error "Requires ArduinoJson 6 or higher"
 #endif
 
-CommunicationManager::CommunicationManager(I2SMicManager* micMgr) :
+CommunicationManager::CommunicationManager(I2SMicManager* micMgr, UIManager* uiMgr,
+                                         const char* ssid, const char* password,
+                                         const char* ntpServer, long gmtOffset, int daylightOffset) :
     server(nullptr),
     audioWs(nullptr),
     isRunning(false),
     micManagerPtr(micMgr),
-    audioClientsMutex(nullptr) // Initialize mutex handle to null
+    uiManagerPtr_(uiMgr),
+    audioClientsMutex(nullptr),
+    wifiSsid_(ssid),
+    wifiPassword_(password),
+    ntpServer_(ntpServer),
+    gmtOffsetSec_(gmtOffset),
+    daylightOffsetSec_(daylightOffset)
 {
     clients.reserve(MAX_CLIENTS);
     audioWsClients.reserve(MAX_AUDIO_WS_CLIENTS);
@@ -26,6 +35,9 @@ CommunicationManager::CommunicationManager(I2SMicManager* micMgr) :
     if (audioClientsMutex == nullptr) {
         Serial.println("ERR: Failed to create audioClientsMutex!");
         // Handle error appropriately, maybe prevent starting?
+    }
+    if (!uiManagerPtr_) {
+         Serial.println("ERR: CommunicationManager created with null UIManager pointer!");
     }
 }
 
@@ -41,14 +53,20 @@ CommunicationManager::~CommunicationManager() {
 bool CommunicationManager::begin() {
     if (isRunning) return true;
     
+    if (!isWiFiConnected()) {
+         Serial.println("WARN: WiFi not connected. Cannot start communication servers.");
+         return false;
+    }
+
     server = new WiFiServer(SERVER_PORT);
     if (!server) {
         Serial.println("ERR: Failed to create Command Server");
         return false;
     }
     server->begin();
+    Serial.printf("TCP Command server started on port %d\n", SERVER_PORT);
+
     isRunning = true;
-    Serial.printf("通信服务器已启动在端口 %d\n", SERVER_PORT);
     return true;
 }
 
@@ -63,15 +81,26 @@ void CommunicationManager::stop() {
     }
     clients.clear();
     
-    // 关闭服务器
+    if (audioWs) {
+        if (xSemaphoreTake(audioClientsMutex, portMAX_DELAY) == pdTRUE) {
+            for (auto* client : audioWsClients) {
+                if(client) client->close();
+            }
+            audioWsClients.clear();
+            xSemaphoreGive(audioClientsMutex);
+        }
+        Serial.println("WebSocket clients disconnected.");
+    }
+    
     if (server) {
         server->end();
         delete server;
         server = nullptr;
+        Serial.println("TCP Command server stopped.");
     }
-    
+
     isRunning = false;
-    Serial.println("通信服务器已停止");
+    Serial.println("Communication services stopped.");
 }
 
 void CommunicationManager::update() {
@@ -204,7 +233,7 @@ void CommunicationManager::setupHttpServer(AsyncWebServer* httpServer) {
     if (!httpServer) return;
 
     // 提供根路径的 HTML 页面
-    httpServer->on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    httpServer->on("/", HTTP_GET, [this](AsyncWebServerRequest *request){
         // 发送包含 JavaScript WebSocket 客户端和 Web Audio API 播放器的 HTML
         String html = R"(
 <!DOCTYPE html>
@@ -526,7 +555,10 @@ void CommunicationManager::setupHttpServer(AsyncWebServer* httpServer) {
         // Example: Send status as JSON
         JsonDocument doc;
         doc["commandServer"] = isRunning;
+        doc["webSocketServer"] = (audioWs != nullptr);
         doc["audioClients"] = audioWsClients.size();
+        doc["wifiStatus"] = isWiFiConnected();
+        doc["ipAddress"] = getIPAddress();
         String output;
         serializeJson(doc, output);
         request->send(200, "application/json", output);
@@ -704,5 +736,89 @@ void CommunicationManager::onAudioWsEvent(AsyncWebSocket *server, AsyncWebSocket
         default:
             // Serial.printf("Unhandled WebSocket event type: %d for client #%lu\n", type, client->id());
             break; 
+    }
+}
+
+bool CommunicationManager::connectWiFi() {
+  Serial.println("正在连接WiFi...");
+  WiFi.begin(wifiSsid_, wifiPassword_);
+
+  const int MAX_ATTEMPTS = 20;
+  for (int attempts = 0; attempts < MAX_ATTEMPTS && WiFi.status() != WL_CONNECTED; attempts++) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  bool connected = (WiFi.status() == WL_CONNECTED);
+  if (connected) {
+    Serial.println("WiFi已连接");
+    Serial.print("IP地址: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("WiFi连接失败！");
+  }
+  if (uiManagerPtr_) {
+    uiManagerPtr_->setWifiStatus(connected);
+    uiManagerPtr_->forceRedraw();
+  }
+  return connected;
+}
+
+bool CommunicationManager::syncNTPTime() {
+  bool success = false;
+  if (isWiFiConnected()) {
+    Serial.println("正在同步NTP时间...");
+    configTime(gmtOffsetSec_, daylightOffsetSec_, ntpServer_);
+
+    struct tm timeinfo;
+    success = getLocalTime(&timeinfo);
+    if (!success) {
+      Serial.println("获取NTP时间失败");
+    } else {
+      Serial.println("NTP时间同步成功");
+      char timeString[50];
+      strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", &timeinfo);
+      Serial.print("当前时间: ");
+      Serial.println(timeString);
+    }
+  } else {
+      Serial.println("WARN: WiFi未连接，跳过NTP同步。");
+      success = false;
+  }
+  if (uiManagerPtr_) {
+       uiManagerPtr_->setTimeStatus(success);
+       uiManagerPtr_->forceRedraw();
+  }
+  return success;
+}
+
+bool CommunicationManager::reconnectWiFi() {
+    Serial.println("[CommManager] Attempting to reconnect WiFi...");
+    WiFi.disconnect(true);
+    delay(100);
+
+    bool wifiConnected = connectWiFi();
+    bool timeSynced = false;
+    if (wifiConnected) {
+        timeSynced = syncNTPTime();
+    } else {
+         if (uiManagerPtr_) {
+             uiManagerPtr_->setTimeStatus(false);
+             uiManagerPtr_->forceRedraw();
+         }
+    }
+    return wifiConnected;
+}
+
+bool CommunicationManager::isWiFiConnected() const {
+    return (WiFi.status() == WL_CONNECTED);
+}
+
+String CommunicationManager::getIPAddress() const {
+    if (isWiFiConnected()) {
+        return WiFi.localIP().toString();
+    } else {
+        return "N/A";
     }
 } 
