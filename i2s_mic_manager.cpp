@@ -78,10 +78,8 @@ bool I2SMicManager::begin() {
 
 float I2SMicManager::readNoiseLevel(int timeout_ms) {
     if (!initialized_) {
-        if (!begin()) {
-             Serial.println("ERR: Attempt to read failed, I2S not initialized and begin() failed.");
-             return NAN;
-        }
+        Serial.println("ERR: Attempt to read failed, I2S not initialized.");
+        return NAN;
     }
 
     size_t bytes_read = 0;
@@ -124,16 +122,6 @@ float I2SMicManager::readNoiseLevel(int timeout_ms) {
 
     // processNoiseLevel 现在也能处理 NaN 输入，但这里我们已经保证了 db 不是 NaN
     return DataValidator::validateDecibels(db);
-}
-
-float I2SMicManager::processNoiseLevel(float rawDb) {
-    // This function is no longer needed as smoothing and high noise logic are removed.
-    // Keeping the function stub might be okay, or remove it entirely.
-    // Let's simplify it to just validate and return.
-    if (isnan(rawDb)) {
-        return NAN;
-    }
-    return DataValidator::validateDecibels(rawDb);
 }
 
 double I2SMicManager::calculateRMS(const int32_t* samples, size_t count) {

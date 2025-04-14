@@ -35,7 +35,7 @@ public:
                 i2s_port_t port_num = I2S_NUM_0);
     
     bool begin();
-    float readNoiseLevel(int timeout_ms = 500);
+    float readNoiseLevel(int timeout_ms = 50);
     void end();
     bool isInitialized() const { return initialized_; }
 
@@ -47,7 +47,6 @@ public:
 private:
     // 私有辅助函数
     double calculateRMS(const int32_t* samples, size_t count);
-    float processNoiseLevel(float rawDb);  // Kept stub for validation or potential future use
 };
 
 #endif // I2S_MIC_MANAGER_H 
