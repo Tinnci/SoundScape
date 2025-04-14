@@ -25,10 +25,11 @@ void LightScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
     int valueY = tft.height() / 2 - 20 + yOffset; // Apply offset
     const EnvironmentData& latestData = getLatestData(); // Use helper from base class
 
-    if (latestData.lux >= 0) { // Check for valid reading
+    // Check if lux value is valid (not NaN)
+    if (!isnan(latestData.lux)) { // 只检查 isnan()
        tft.drawFloat(latestData.lux, 0, tft.width() / 2, valueY);
     } else {
-       tft.drawString("N/A", tft.width() / 2, valueY);
+       tft.drawString("---", tft.width() / 2, valueY); // 使用 "---"
     }
 
     // Unit - Below value, Size 3

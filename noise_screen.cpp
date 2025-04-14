@@ -1,8 +1,10 @@
 #include "noise_screen.h"
+#include "ui_constants.h" // Include constants for DB_MIN
+#include <cmath>           // Include for isnan
 
 // Define constants from the old ui.cpp (consider moving to a shared config header later)
-const int V_PADDING = 5;
-const int TITLE_Y = V_PADDING + 5;
+// const int V_PADDING = 5; // Defined in ui_constants.h - REMOVE/COMMENT OUT
+// const int TITLE_Y = V_PADDING + 5; // Defined in ui_constants.h - REMOVE/COMMENT OUT
 
 // Constructor implementation
 NoiseScreen::NoiseScreen(TFT_eSPI& display, EnvironmentData* data, int& dataIdxRef) :
@@ -25,11 +27,12 @@ void NoiseScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
     int valueY = tft.height() / 2 - 20 + yOffset; // Apply offset
     const EnvironmentData& latestData = getLatestData(); // Use helper from base class
 
-    // Check if decibels value is valid (using the dummy data check from base class)
-    if (latestData.temperature > -900) { // Check against dummy temp value as indicator
+    // Check if decibels value is valid (not NaN and potentially above a minimum floor if needed)
+    if (!isnan(latestData.decibels) && latestData.decibels >= DB_MIN) { // Check against NaN and DB_MIN
         tft.drawFloat(latestData.decibels, 1, tft.width() / 2, valueY);
     } else {
-        tft.drawString("N/A", tft.width() / 2, valueY);
+        // Display "N/A" or similar if the reading is invalid (NaN or below reasonable minimum)
+        tft.drawString("---", tft.width() / 2, valueY); // Use "---" for no signal/invalid
     }
 
     // Unit - Below value, Size 3

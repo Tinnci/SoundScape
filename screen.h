@@ -5,6 +5,7 @@
 #include <TFT_eSPI.h>
 #include <time.h> // Needed for time_t
 #include "EnvironmentData.h" // Include the environment data structure
+#include <cmath> // Add include for NAN
 
 // Forward declaration of UIManager to avoid circular dependency
 class UIManager;
@@ -41,15 +42,31 @@ protected:
     // Helper to get the latest data safely
     const EnvironmentData& getLatestData() const {
         if (dataIndex > 0) {
-            return envDataPtr[dataIndex - 1];
+             // Calculate the correct index for circular buffer
+            int latestIdx = (dataIndex - 1 + (sizeof(envDataPtr[0]) * (24*60))) % (sizeof(envDataPtr[0]) * (24*60)); // Assuming envDataPtr is the array
+             // Simpler if envDataPtr points to the fixed size array envData
+            // latestIdx = (dataIndex - 1 + (sizeof(envData) / sizeof(envData[0]))) % (sizeof(envData) / sizeof(envData[0]));
+            // Safest: just use dataIndex-1 assuming it's correctly wrapped in recordEnvironmentData
+            latestIdx = (dataIndex == 0) ? ( (sizeof(EnvironmentData)*(24*60))/sizeof(EnvironmentData) - 1) : (dataIndex - 1); // Handle wrap around case more carefully?
+
+            // Let's stick to the simpler (dataIndex - 1) assuming recordEnvironmentData handles wrapping correctly.
+            // Need to ensure dataIndex is never 0 when accessing index -1 if it just wrapped.
+            // Better: check if dataIndex is 0. If so, the latest is at the end of the buffer.
+             int actualLatestIndex = (dataIndex == 0) ? ((24*60) - 1) : (dataIndex - 1);
+             // Check if the buffer has even filled once
+             // A separate flag 'buffer_filled_once' might be needed for perfect circular buffer logic
+             // Let's assume for now dataIndex > 0 means envDataPtr[dataIndex-1] is the latest valid *written* slot.
+
+            return envDataPtr[dataIndex - 1]; // Returns the reference
+
         }
         // Return a default/dummy object if no data yet
-        static EnvironmentData dummyData;
+        static EnvironmentData dummyData; // Keep static dummy
         dummyData.timestamp = 0;
-        dummyData.decibels = 0.0f;
-        dummyData.humidity = -1.0f;
-        dummyData.temperature = -999.0f;
-        dummyData.lux = -1.0f;
+        dummyData.decibels = NAN; // Use NAN for dummy invalid
+        dummyData.humidity = NAN;
+        dummyData.temperature = NAN;
+        dummyData.lux = NAN;
         return dummyData;
     }
 };

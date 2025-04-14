@@ -44,39 +44,42 @@ void MainScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
 
     // Temperature
     tft.drawString("Temp:", labelX, currentY);
-    if (latestData.temperature > -100) { // Check for valid reading from dummy data
+    if (!isnan(latestData.temperature)) {
         tft.drawFloat(latestData.temperature, 1, valueX, currentY);
         tft.drawString(" C", valueX + tft.textWidth("00.0") + 5, currentY);
     } else {
-        tft.drawString("N/A", valueX, currentY);
+        tft.drawString("---", valueX, currentY);
     }
     currentY += LINE_HEIGHT - 5; // 减小行间距
 
     // Humidity
     tft.drawString("Humidity:", labelX, currentY);
-    if (latestData.humidity >= 0) { // Check for valid reading
+    if (!isnan(latestData.humidity)) {
         tft.drawFloat(latestData.humidity, 1, valueX, currentY);
         tft.drawString(" %", valueX + tft.textWidth("00.0") + 5, currentY);
     } else {
-        tft.drawString("N/A", valueX, currentY);
+        tft.drawString("---", valueX, currentY);
     }
     currentY += LINE_HEIGHT - 5; // 减小行间距
 
     // Light
     tft.drawString("Light:", labelX, currentY);
-    if (latestData.lux >= 0) { // Check for valid reading
+    if (!isnan(latestData.lux)) {
         tft.drawFloat(latestData.lux, 0, valueX, currentY);
         tft.drawString(" lx", valueX + tft.textWidth("00000") + 5, currentY);
     } else {
-        tft.drawString("N/A", valueX, currentY);
+        tft.drawString("---", valueX, currentY);
     }
     currentY += LINE_HEIGHT - 5; // 减小行间距
 
     // Noise
     tft.drawString("Noise:", labelX, currentY);
-    // Assuming decibels are always calculated, even if 0
-    tft.drawFloat(latestData.decibels, 1, valueX, currentY);
-    tft.drawString(" dB", valueX + tft.textWidth("00.0") + 5, currentY);
+    if (!isnan(latestData.decibels)) {
+        tft.drawFloat(latestData.decibels, 1, valueX, currentY);
+        tft.drawString(" dB", valueX + tft.textWidth("00.0") + 5, currentY);
+    } else {
+        tft.drawString("---", valueX, currentY);
+    }
     currentY += LINE_HEIGHT - 5; // 减小行间距
 
     // Optional Separator Line (Apply offset to Y)

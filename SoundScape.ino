@@ -43,6 +43,8 @@
 #include <Adafruit_Si7021.h>
 #include <BH1750.h>
 #include <TFT_eSPI.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
 
 #include "ui_manager.h"
 #include "main_screen.h"
@@ -93,7 +95,8 @@
 #define RECORD_TIME_MS 1000  // 每次记录的时长（毫秒）
 #define SAMPLE_RATE 16000    // 采样率
 #define SAMPLE_BITS 32       // 采样位深
-#define NOISE_CHECK_INTERVAL 5000 // 每5秒检查一次噪声水平（毫秒）
+#define SENSOR_READ_INTERVAL 1000 // 每 1000ms (1秒) 读取一次传感器
+#define BROADCAST_INTERVAL 5000   // 每 5000ms 广播一次数据
 #define HOURS_TO_KEEP 24     // 保存24小时数据
 
 // 噪声阈值设定
@@ -106,7 +109,9 @@
 // 变量声明
 EnvironmentData envData[24 * 60]; // 存储24小时中每分钟的数据
 int dataIndex = 0;
-unsigned long lastDataRecordTime = 0; // Renamed from lastCheckTime for clarity
+unsigned long lastSensorReadTime = 0; // 用于传感器读取的计时器
+unsigned long lastBroadcastTime = 0;  // 用于数据广播的计时器
+unsigned long lastSaveTime = 0;       // 用于SD卡保存的计时器
 unsigned long startTime = 0;
 volatile bool isRecording = false;  // 添加记录状态标志
 // Shared states (wifi, sd, time, led mode) are now managed by uiManager
@@ -180,7 +185,10 @@ const long gmtOffset_sec = 28800;
 const int daylightOffset_sec = 0;
 
 // 添加通信管理器实例
-CommunicationManager commManager;
+CommunicationManager commManager(&micManager); // Pass micManager instance
+
+// --- Instantiate Web Server --- (需要确保 commManager 已经实例化)
+AsyncWebServer httpServer(80); // 在端口 80 创建 HTTP 服务器
 
 /**
  * 连接WiFi网络
@@ -401,132 +409,168 @@ void createHeaderIfNeeded() {
 
 /**
  * 记录当前环境数据
- * 采集并处理噪声、温度、湿度数据
- * 存储到环境数据数组中
+ * 采集并处理噪声、温度、湿度、光照数据
+ * 存储到环境数据数组中，并处理无效数据
  */
 void recordEnvironmentData() {
+    // 保留 isRecording 标志作为基本的重入保护
     if (isRecording) {
         return;
     }
-    
-    // 检查内存状态，如果不足，尝试释放紧急内存
-    if (isLowMemory(15000)) {
-        releaseEmergencyMemory();
-    }
-    
     isRecording = true;
-    
-    // 声明默认值，如果传感器读取失败则使用这些值
-    float db = 0, h = -1, t = -1, lux = -1;
-    time_t now;
 
-    // 1. 安全检查 - 防止dataIndex越界
-    if (dataIndex >= (sizeof(envData) / sizeof(envData[0]))) {
-        Serial.println("警告：数据缓冲区已满，重置索引");
-        dataIndex = 0;
+    // 检查内存状态
+    if (isLowMemory(15000)) { // 阈值可以调整
+        Serial.println("WARN: Low memory detected before recording, releasing emergency memory.");
+        releaseEmergencyMemory();
+        // 可以在释放后再检查一次，如果仍然很低，可能需要更激进的操作或日志
+        if (isLowMemory(10000)) {
+             Serial.println("ERR: Memory critically low even after releasing emergency pool!");
+             // 可以考虑跳过本次记录或重启
+             // isRecording = false; // 确保退出前重置标志
+             // return;
+        }
     }
 
-    // 2. 读取声音数据和计算分贝值
+    // 为本次记录准备数据结构
+    EnvironmentData newData;
+    time_t now = uiManager.isTimeInitialized() ? time(NULL) : millis() / 1000;
+    newData.timestamp = now;
+    newData.decibels = NAN; // 初始化为无效
+    newData.humidity = NAN;
+    newData.temperature = NAN;
+    newData.lux = NAN;
+
+    bool micReadSuccess = false;
+    bool tempHumReadSuccess = false;
+    bool lightReadSuccess = false;
+
+    // --- 1. 读取声音数据 ---
     try {
-        // 使用新的I2SMicManager类读取噪声水平
-        db = micManager.readNoiseLevel(500);
-        
-        // 检查是否检测到高噪声
-        if (micManager.isHighNoise()) {
-            // 立即更新LED显示
-            updateLEDs();
-            // 立即更新UI显示
-            uiManager.forceRedraw();
-            // 记录高噪声事件
-            Serial.printf("警告：检测到高噪声事件！噪声级别: %.1f dB\n", db);
-        }
-
-        // 3. 读取温湿度数据
-        // 增加更多安全检查，如果Si7021初始化失败则不尝试读取
-        static bool si7021_initialized = false;
-        if (!si7021_initialized) {
-            si7021_initialized = si7021.begin();
-            if (!si7021_initialized) {
-                Serial.println("Si7021传感器初始化失败，跳过温湿度读取");
-            } else {
-                Serial.println("Si7021传感器初始化成功");
+        float db_reading = micManager.readNoiseLevel(500); // 500ms timeout
+        if (!isnan(db_reading)) {
+            newData.decibels = db_reading; // 存储经过处理和验证的值
+            micReadSuccess = true;
+            // 高噪声检测和处理 (如果需要立即响应，可以放在这里)
+            if (micManager.isHighNoise()) {
+                Serial.printf("HIGH NOISE detected: %.1f dB\n", newData.decibels);
+                // Maybe trigger immediate LED update or other actions
+                // updateLEDs(); // Consider if calling this here is too frequent
+                // uiManager.forceRedraw();
             }
+        } else {
+            // Serial.println("DBG: Microphone read returned NaN.");
+            // newData.decibels 保持为 NAN
         }
-        
-        if (si7021_initialized) {
-            // 增加超时保护
-            unsigned long startTime = millis();
-            const unsigned long SENSOR_TIMEOUT = 500; // 500ms超时
-            
-            bool timeout = false;
-            bool readSuccess = false;
-            
-            while (!readSuccess && !timeout) {
-                h = si7021.readHumidity();
-                t = si7021.readTemperature();
-                
-                if (!isnan(h) && !isnan(t)) {
-                    readSuccess = true;
-                } else if (millis() - startTime > SENSOR_TIMEOUT) {
-                    timeout = true;
-                    Serial.println("Si7021读取超时");
-                } else {
-                    delay(10); // 短暂延迟后重试
-                }
-            }
-            
-            if (!readSuccess) {
-                h = t = -1;
-                Serial.println("Si7021读取失败");
-            } else {
-                // 使用DataValidator验证温湿度数据
-                t = DataValidator::validateTemperature(t);
-                h = DataValidator::validateHumidity(h);
-            }
-        }
-
-        // 4. 读取光照强度 - 使用更安全的方法
-        // 尝试读取光照，增加错误重试和超时保护
-        lux = lightMeter.readLightLevel();
-        
-        // 如果读取失败，等待一段时间后再尝试一次
-        if (lux < 0) {
-            delay(50);
-            lux = lightMeter.readLightLevel();
-        }
-        
-        // 使用DataValidator验证光照数据
-        lux = DataValidator::validateLux(lux);
-        
-        if (lux < 0) {
-            Serial.println("BH1750读取失败");
-        }
-
-        // 5. 获取当前时间 (初始化或相对时间)
-        now = uiManager.isTimeInitialized() ? time(NULL) : millis() / 1000;
-
-        // 6. 存储环境数据 - 逐个赋值而不是使用结构体初始化
-        envData[dataIndex].timestamp = now;
-        envData[dataIndex].temperature = t;
-        envData[dataIndex].humidity = h;
-        envData[dataIndex].decibels = db;
-        envData[dataIndex].lux = lux;
-
-        // 7. 打印调试信息
-        Serial.printf("\n==== 环境数据 [%d] ====\n", dataIndex);
-        Serial.printf("时间戳: %lld\n", (long long)now);
-        Serial.printf("噪声: %.1f dB\n", db);
-        Serial.printf("湿度: %.1f %%\n", h);
-        Serial.printf("温度: %.1f °C\n", t);
-        Serial.printf("光照: %.1f lx\n", lux);
-
-        // 8. 增加数据索引
-        dataIndex++;
+    } catch (const std::exception& e) {
+        Serial.printf("ERR: Exception during microphone reading: %s\n", e.what());
+        newData.decibels = NAN; // 确保异常时也为无效
     } catch (...) {
-        Serial.println("读取数据过程中发生异常");
+        Serial.println("ERR: Unknown exception during microphone reading.");
+        newData.decibels = NAN;
     }
-    
-    // 确保标志被重置，即使发生异常
+
+    // --- 2. 读取温湿度数据 ---
+    static bool si7021_initialized = false; // 保持静态以避免每次检查
+    if (!si7021_initialized) {
+        si7021_initialized = si7021.begin();
+        if (!si7021_initialized) {
+            Serial.println("WARN: Si7021 sensor failed to initialize (or is not connected). Skipping Temp/Hum.");
+        } else {
+            Serial.println("Si7021 sensor initialized successfully.");
+        }
+    }
+
+    if (si7021_initialized) {
+        try {
+            float h = si7021.readHumidity();
+            float t = si7021.readTemperature();
+
+            // 检查 Si7021 读取是否成功 (返回 NaN on failure)
+            if (!isnan(h) && !isnan(t)) {
+                // 使用 DataValidator 验证
+                newData.temperature = DataValidator::validateTemperature(t);
+                newData.humidity = DataValidator::validateHumidity(h);
+                // 再次检查验证后的值是否有效 (DataValidator 可能返回特定无效值如 -1)
+                if (newData.temperature != -1.0f && newData.humidity != -1.0f) {
+                     tempHumReadSuccess = true;
+                } else {
+                     // Serial.println("DBG: Temp/Hum validation failed.");
+                     newData.temperature = NAN; // 标记为无效
+                     newData.humidity = NAN;
+                }
+            } else {
+                // Serial.println("DBG: Si7021 read returned NaN.");
+                newData.temperature = NAN;
+                newData.humidity = NAN;
+            }
+        } catch (const std::exception& e) {
+            Serial.printf("ERR: Exception during Si7021 reading: %s\n", e.what());
+            newData.temperature = NAN;
+            newData.humidity = NAN;
+        } catch (...) {
+            Serial.println("ERR: Unknown exception during Si7021 reading.");
+            newData.temperature = NAN;
+            newData.humidity = NAN;
+        }
+    } // end if si7021_initialized
+
+    // --- 3. 读取光照强度 ---
+    // BH1750 的 begin 应该在 setup 中完成，这里假设它已初始化
+    // lightMeter.begin() 返回 bool，readLightLevel 返回 float (-1 or -2 on error)
+    try {
+        float lux_reading = lightMeter.readLightLevel();
+        // 检查是否读取成功 (BH1750 返回负值表示错误)
+        if (lux_reading >= 0) {
+            newData.lux = DataValidator::validateLux(lux_reading);
+            // 检查验证结果
+            if (newData.lux != -1.0f) { // validateLux 返回 -1 表示无效
+                lightReadSuccess = true;
+            } else {
+                 // Serial.println("DBG: Lux validation failed.");
+                 newData.lux = NAN; // 标记为无效
+            }
+        } else {
+            // Serial.printf("DBG: BH1750 read failed with code: %.0f\n", lux_reading);
+            newData.lux = NAN; // 标记为无效
+        }
+    } catch (const std::exception& e) {
+        Serial.printf("ERR: Exception during BH1750 reading: %s\n", e.what());
+        newData.lux = NAN;
+    } catch (...) {
+        Serial.println("ERR: Unknown exception during BH1750 reading.");
+        newData.lux = NAN;
+    }
+
+
+    // --- 4. 存储数据 ---
+    // 决定是否存储这次的数据。可以根据需求调整逻辑，
+    // 例如，只要麦克风成功就存储，或者所有数据都成功才存储。
+    // 当前逻辑：只要时间戳有效就存储，无效传感器读数用 NAN 表示。
+
+    // 安全检查 - 防止dataIndex越界 (如果达到末尾，则循环覆盖)
+    if (dataIndex >= (sizeof(envData) / sizeof(envData[0]))) {
+        // Serial.println("DBG: Data buffer full, wrapping around.");
+        dataIndex = 0; // 回到开头实现循环缓冲区
+    }
+
+    // 存储准备好的 newData 结构
+    envData[dataIndex] = newData;
+
+    // --- 5. 打印调试信息 (只打印本次读取的数据) ---
+    Serial.printf("\n==== Record [%d] @ %lld ====\n", dataIndex, (long long)now);
+    if (!isnan(newData.decibels)) Serial.printf("Noise: %.1f dB %s\n", newData.decibels, micReadSuccess ? "" : "(ERR)"); else Serial.println("Noise: ---");
+    if (!isnan(newData.humidity)) Serial.printf("Humid: %.1f %% %s\n", newData.humidity, tempHumReadSuccess ? "" : "(ERR)"); else Serial.println("Humid: ---");
+    if (!isnan(newData.temperature)) Serial.printf("Temp:  %.1f C %s\n", newData.temperature, tempHumReadSuccess ? "" : "(ERR)"); else Serial.println("Temp:  ---");
+    if (!isnan(newData.lux)) Serial.printf("Light: %.1f lx %s\n", newData.lux, lightReadSuccess ? "" : "(ERR)"); else Serial.println("Light: ---");
+    Serial.println("==========================");
+
+
+    // --- 6. 增加数据索引 ---
+    dataIndex++;
+
+
+    // --- 7. 重置标志 ---
     isRecording = false;
 }
 
@@ -877,8 +921,18 @@ void setup() {
     // 添加异常处理
     try {
         Serial.begin(115200);
-        delay(1000);
-        Serial.println("ESP32S3 环境监测器");
+        while (!Serial) { yield(); } // 等待串口连接
+
+        Serial.println("ESP32S3 环境监测系统启动中...");
+
+        // 启动内存监控
+        initEmergencyMemory();
+
+        // 初始化LED
+        pixels.begin(); // 初始化NeoPixel库
+        pixels.setBrightness(50); // 设置全局亮度 (0-255), 50 是一个比较暗的值
+        pixels.clear(); // 关闭所有LED
+        pixels.show();  // 显示更改
         
         // 检查启动时的内存状态
         Serial.println("启动时内存状态检查:");
@@ -962,32 +1016,23 @@ void setup() {
         // 连接WiFi和同步时间
         connectToWiFi();
         bool wifiStatus = (WiFi.status() == WL_CONNECTED);
-        uiManager.setWifiStatus(wifiStatus); // Update UIManager state
+        uiManager.setWifiStatus(wifiStatus);
         if (wifiStatus) {
-            initTime(); // initTime now updates UIManager state
+            initTime();
         }
 
-        // 初始化I2S (使用新的类)
+        // 初始化I2S (micManager is already instantiated)
         Serial.println("尝试初始化I2S麦克风...");
-        Serial.printf("使用引脚配置: WS=%d, SD=%d, SCK=%d\n", I2S_WS_PIN, I2S_SD_PIN, I2S_SCK_PIN);
-        
         if (micManager.begin()) {
-            Serial.println("I2S麦克风初始化成功 (使用新的I2SMicManager类)");
+            Serial.println("I2S麦克风初始化成功 (使用I2SMicManager类)");
             
             // 进行测试读取尝试
             float initialDb = micManager.readNoiseLevel(1000);
             Serial.printf("初始噪声读数: %.2f dB\n", initialDb);
             
         } else {
-            Serial.println("I2SMicManager初始化失败，尝试使用备用方法...");
-            // 如果新类初始化失败，尝试使用原始方法作为备用
-            i2s_config();
-            
-            // 测试直接从I2S读取
-            int32_t buffer[128] = {0};
-            size_t bytes_read = 0;
-            i2s_channel_read(rx_handle, buffer, sizeof(buffer), &bytes_read, 1000);
-            Serial.printf("备用初始化后直接读取: 读取了 %d 字节\n", bytes_read);
+            Serial.println("I2SMicManager初始化失败！");
+            // Maybe handle this more gracefully than just proceeding
         }
 
         // 初始化SD卡
@@ -1001,15 +1046,10 @@ void setup() {
 
         // 获取启动时间
         startTime = millis();
-        lastDataRecordTime = startTime; // Initialize data recording timer
+        lastSensorReadTime = startTime; // Initialize data recording timer
         lastMemoryLog = startTime; // 初始化内存记录时间
         // lastDisplayUpdateTime is managed by UIManager
 
-        // 初始化LED (Set initial mode in UIManager constructor)
-        pixels.begin();
-        pixels.clear();
-        pixels.show();
-        
         // 初始化显示屏
         tft.init();
         tft.setRotation(3); // 根据需要调整屏幕方向（0-3）
@@ -1033,11 +1073,23 @@ void setup() {
 
         // 在WiFi连接后初始化通信管理器
         if (WiFi.status() == WL_CONNECTED) {
+            // 启动 TCP 命令服务器 (如果仍然需要)
             if (commManager.begin()) {
-                Serial.println("通信管理器初始化成功");
+                Serial.println("命令服务器初始化成功 (TCP Port 8266)");
             } else {
-                Serial.println("通信管理器初始化失败");
+                Serial.println("命令服务器初始化失败");
             }
+
+            // --- 设置 HTTP 和 WebSocket 服务器 ---
+            commManager.setupHttpServer(&httpServer);
+            commManager.setupWebSocketServer(&httpServer); // WebSocket 附加到 HTTP 服务器
+
+            // --- 启动 HTTP 服务器 --- (
+            httpServer.begin();
+            Serial.println("HTTP 和 WebSocket 服务器已启动 (Port 80)");
+
+        } else {
+             Serial.println("WARN: WiFi 未连接，Web 服务器未启动。");
         }
 
         Serial.println("系统初始化完成!");
@@ -1090,7 +1142,7 @@ void handleSystemExit() {
 
 void loop() {
     try {
-        // 重置看门狗定时器 (喂狗)
+        // 重置看门狗定时器
         timerWrite(watchdog, 0);
         
         unsigned long currentMillis = millis();
@@ -1107,79 +1159,67 @@ void loop() {
             }
         }
         
-        // --- 1. 检查数据是否需要保存到SD卡（缓冲区已满或达到保存间隔） ---
-        static unsigned long lastSaveTime = 0;
-        const unsigned long SAVE_INTERVAL = 300000; // 每5分钟保存一次数据
-        
-        if (dataIndex >= (sizeof(envData) / sizeof(envData[0])) || 
-            (dataIndex > 0 && currentMillis - lastSaveTime >= SAVE_INTERVAL)) {
-            if (uiManager.isSdCardInitialized()) {
-                saveEnvironmentDataToSD();
+        // --- 1. 处理 TCP 命令通信 (如果保留) ---
+        commManager.update(); // Handles commands
+
+        // --- 1.5 通过 WebSocket 发送音频流 ---
+        commManager.streamAudioViaWebSocket(); // Handles audio streaming via WS
+
+        // --- 2. 检查按钮 ---
+        checkButtons();
+
+        // --- 3. 更新UI ---
+        uiManager.update();
+
+        // --- 4. 传感器数据采集 & 更新显示 ---
+        if (currentMillis - lastSensorReadTime >= SENSOR_READ_INTERVAL) {
+            lastSensorReadTime = currentMillis;
+            recordEnvironmentData(); // Reads sensors (including mic for dB)
+            updateLEDs();
+            // Update internal data cache for command server GET_CURRENT
+            if (dataIndex > 0) {
+                 EnvironmentData latest = envData[(dataIndex - 1 + (sizeof(envData) / sizeof(envData[0]))) % (sizeof(envData) / sizeof(envData[0]))];
+                 commManager.broadcastEnvironmentData(latest); // Updates internal state for TCP commands
+            }
+             uiManager.setNeedsDataUpdate(true);
+        }
+
+        // --- 5. SD卡保存逻辑 ---
+        const unsigned long SAVE_INTERVAL = 60000; // 每分钟保存一次
+        // 检查是否需要保存数据到SD卡 (例如缓冲区满或达到保存间隔)
+        if (uiManager.isSdCardInitialized()) {
+            // 使用 lastSaveTime 而不是 lastDataRecordTime
+            if (dataIndex >= (sizeof(envData) / sizeof(envData[0])) || 
+                (dataIndex > 0 && currentMillis - lastSaveTime >= SAVE_INTERVAL)) {
+                saveEnvironmentDataToSD(); // saveEnvironmentDataToSD 会重置 dataIndex
                 lastSaveTime = currentMillis;
-            } else {
-                if (dataIndex >= (sizeof(envData) / sizeof(envData[0]))) {
-                    dataIndex = 0; // 如果没有SD卡且缓冲区满，则循环覆盖
-                }
+            } else if (dataIndex == 0) {
+                // 如果 dataIndex 被 saveEnvironmentDataToSD 重置为0，也重置保存计时器
+                 lastSaveTime = currentMillis;
+            }
+        } else {
+            // 如果没有SD卡，当缓冲区满时循环覆盖 (dataIndex 在 recordEnvironmentData 中处理)
+            if (dataIndex >= (sizeof(envData) / sizeof(envData[0]))) {
+                 // 缓冲区已满的处理逻辑在 recordEnvironmentData 中
+                 // 这里不需要额外操作，但要确保 recordEnvironmentData 能正确处理循环覆盖
+                 // 可能需要重置 save 定时器避免不必要的检查
+                 lastSaveTime = currentMillis; 
             }
         }
 
-        // --- 2. 检查是否需要采集数据 ---
-        if (currentMillis - lastDataRecordTime >= NOISE_CHECK_INTERVAL) {
-            lastDataRecordTime = currentMillis;
-            
-            // 读取传感器数据
-            recordEnvironmentData();
-            
-            // 如果WiFi已连接且通信管理器在运行，广播最新数据
-            if (WiFi.status() == WL_CONNECTED && commManager.isServerRunning()) {
-                Serial.println("准备发送环境数据到上位机...");
-                if (dataIndex > 0) {
-                    EnvironmentData currentData = envData[dataIndex - 1];
-                    Serial.printf("当前数据: 噪声=%.1f dB, 温度=%.1f °C, 湿度=%.1f %%, 光照=%.1f lx\n",
-                        currentData.decibels, currentData.temperature, currentData.humidity, currentData.lux);
-                    commManager.broadcastEnvironmentData(currentData);
-                } else {
-                    Serial.println("警告：没有可用的环境数据");
-                }
-            } else {
-                if (WiFi.status() != WL_CONNECTED) {
-                    Serial.println("WiFi未连接，无法发送数据");
-                }
-                if (!commManager.isServerRunning()) {
-                    Serial.println("通信管理器未运行，无法发送数据");
-                }
-            }
-            
-            // 更新LED显示
-            updateLEDs();
-            
-            // 通知UI更新
-            uiManager.forceRedraw();
-        }
-        
-        // --- 3. 定期记录内存使用情况 ---
+        // --- 6. 定期记录内存使用情况 ---
         if (currentMillis - lastMemoryLog >= MEMORY_LOG_INTERVAL) {
             lastMemoryLog = currentMillis;
             logMemoryStatus();
         }
         
-        // --- 4. 检查内存分片情况 ---
-        if (currentMillis - lastFragCheck >= FRAG_CHECK_INTERVAL) {
-            lastFragCheck = currentMillis;
-            checkMemoryFragmentation();
-        }
+        // --- 7. 清理 WebSocket 客户端 (库会自动处理部分，但显式调用有时有帮助) ---
+         // audioWs->cleanupClients(); // commManager.streamAudioViaWebSocket 内部已调用
 
-        // --- 5. 处理按钮输入和UI更新 ---
-        checkButtons();
-        uiManager.update();
+        // --- 8. 短暂延迟或 yield ---
+         yield(); // 使用 yield() 替代 delay()，允许异步任务运行
+        // delay(1); // 或者使用非常小的延迟
 
-        // --- 6. 更新通信管理器 ---
-        if (WiFi.status() == WL_CONNECTED) {
-            commManager.update();
-        }
-
-        // --- 7. 短暂延迟 ---
-        delay(5); // 减少延迟时间以提高响应速度
     } catch (const std::exception& e) {
         Serial.printf("主循环中发生异常: %s\n", e.what());
         delay(1000);

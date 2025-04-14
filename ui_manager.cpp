@@ -136,6 +136,15 @@ void UIManager::forceRedraw() {
     redrawNeeded = true;
 }
 
+// Set flag indicating data has updated, potentially requiring a redraw
+void UIManager::setNeedsDataUpdate(bool needsUpdate) {
+    if (needsUpdate) {
+        redrawNeeded = true;
+    }
+    // If needsUpdate is false, we don't necessarily clear the redrawNeeded flag,
+    // as a redraw might be needed for other reasons (e.g., screen transition).
+}
+
 // Internal method to change the active screen (called by startTransition or setInitialScreen)
 // Does not handle onExit/onEnter directly anymore, startTransition does.
 void UIManager::setActiveScreenByIndex(int index) {

@@ -34,6 +34,9 @@ public:
     // Force a redraw of the current screen
     void forceRedraw();
 
+    // Set flag indicating data has updated, potentially requiring a redraw
+    void setNeedsDataUpdate(bool needsUpdate);
+
     // Getters for shared state (alternative to using extern in screens)
     // bool isWifiConnected() const;
     // bool isSdCardInitialized() const;

@@ -33,11 +33,11 @@ void TempHumScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
     tft.setTextSize(3);
     tft.drawString("Temp:", labelX, valueY + 5);
     tft.setTextDatum(TR_DATUM);
-    if (latestData.temperature > -100) {
+    if (!isnan(latestData.temperature)) {
         tft.drawFloat(latestData.temperature, 1, valueX, valueY);
         tft.drawString("C", valueX + 25, valueY + 5);
     } else {
-        tft.drawString("N/A", valueX, valueY);
+        tft.drawString("---", valueX, valueY);
     }
     tft.setTextDatum(TL_DATUM);
     valueY += 70; // 适当调整垂直间距
@@ -45,11 +45,11 @@ void TempHumScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
     // Humidity - Size 3 (改小数值字体)
     tft.drawString("Humidity:", labelX, valueY + 5);
     tft.setTextDatum(TR_DATUM);
-    if (latestData.humidity >= 0) {
+    if (!isnan(latestData.humidity)) {
         tft.drawFloat(latestData.humidity, 1, valueX, valueY);
         tft.drawString("%", valueX + 25, valueY + 5);
     } else {
-        tft.drawString("N/A", valueX, valueY);
+        tft.drawString("---", valueX, valueY);
     }
     tft.setTextDatum(TL_DATUM);
 }

@@ -48,6 +48,11 @@ public:
     bool isInitialized() const { return initialized_; }
     bool isHighNoise() const { return isHighNoise_; }  // 获取高噪声状态
     float getHighNoiseThreshold() const { return HIGH_NOISE_THRESHOLD; }  // 获取高噪声阈值
+
+    // Reads raw I2S samples into the provided buffer.
+    // Returns the number of samples read (not bytes).
+    // Returns 0 on failure or timeout.
+    size_t readRawSamples(int32_t* buffer, size_t maxSamples, int timeout_ms);
     
 private:
     // 私有辅助函数
