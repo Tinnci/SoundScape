@@ -11,9 +11,25 @@
  * 7. 网络通信服务 (CommunicationManager)
  * 8. 多按钮交互界面 (UIManager, InputManager)
  * 9. 内存监控 (memory_utils, Main Sketch)
+ * 硬件连接：
+ * - INMP441: SCK->GPIO15, WS->GPIO16, SD->GPIO17
+ * - Si7021和BH1750 (I2C): 
+ *   - SDA->GPIO10
+ *   - SCL->GPIO11
+ * - SD卡: MISO->GPIO37, MOSI->GPIO35, SCK->GPIO36, CS->GPIO5
+ * - 按钮: BTN1->GPIO2, BTN2->GPIO1, BTN3->GPIO41, BTN4->GPIO40, BTN5->GPIO42
+ * - WS2812B LED: DATA->GPIO18
  * 
- * 硬件连接：（保持不变）
- * ... (省略)
+ * 传感器说明：
+ * - Si7021: 工业级温湿度传感器
+ *   - 温度范围: -40°C至125°C，精度±0.4°C
+ *   - 湿度范围: 0-100%RH，精度±3%RH
+ *   - I2C地址: 0x40
+ * 
+ * - BH1750: 光照强度传感器
+ *   - 测量范围: 1-65535 lx
+ *   - 分辨率: 1 lx
+ *   - I2C地址: 0x23/0x5C
  */
 
 #include <Arduino.h>
@@ -33,6 +49,7 @@
 #include "i2s_mic_manager.h"
 #include "temp_hum_sensor.h"
 #include "light_sensor.h"
+#include "BleManager.h"
 
 // --- Include Screen Headers ---
 #include "main_screen.h"
@@ -113,6 +130,9 @@ InputManager inputManager(uiManager, dataManager, commManager);
 
 // LED Controller (depends on UI Manager and Data Manager)
 LedController ledController(uiManager, dataManager);
+
+// BLE Manager (depends on Data Manager)
+BleManager bleManager(dataManager);
 
 // Web Server (passed to commManager for setup)
 AsyncWebServer httpServer(80);
@@ -250,6 +270,9 @@ void setup() {
         inputManager.begin();    // Initializes button pins
         ledController.begin();   // Initializes NeoPixels
 
+        // --- BLE Initialization ---
+        bleManager.begin();            // Call BleManager's begin
+
         // --- Network Initialization (using CommunicationManager) ---
         Serial.println("--- Initializing Network ---");
         if (commManager.connectWiFi()) { // Try connecting (updates UI status internally)
@@ -317,6 +340,14 @@ void loop() {
         dataManager.update();      // Read sensors periodically, handle SD saving
         ledController.update();    // Update LED strip based on mode and data
         uiManager.update();        // Update active screen, handle transitions
+
+        // --- Update BLE Advertising Data ---
+        static unsigned long lastBleUpdate = 0;
+        const unsigned long BLE_UPDATE_INTERVAL = 2000; // Update advertising data every 2 seconds
+        if (millis() - lastBleUpdate >= BLE_UPDATE_INTERVAL) {
+            lastBleUpdate = millis();
+            bleManager.updateAdvertisingData();
+        }
 
         // --- Memory Monitoring ---
         unsigned long currentMillis = millis();
