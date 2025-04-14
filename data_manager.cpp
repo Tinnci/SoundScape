@@ -195,20 +195,16 @@ void DataManager::recordEnvironmentDataInternal() {
     newData.lux = NAN;
 
     // --- 2. Read Sensors ---
-    bool micReadSuccess = false;
-    bool tempHumReadSuccess = false;
-    bool lightReadSuccess = false;
+    // Removed unused variables: micReadSuccess, tempHumReadSuccess, lightReadSuccess
+    // bool micReadSuccess = false;
+    // bool tempHumReadSuccess = false;
+    // bool lightReadSuccess = false;
 
     // Noise Level
     float db_reading = micManager_.readNoiseLevel(500); // Use the I2S Manager instance
     if (!isnan(db_reading)) {
         newData.decibels = db_reading; // Already validated by micManager
-        micReadSuccess = true;
-        // Check for high noise AFTER reading
-        if (micManager_.isHighNoise()) {
-             // Serial.printf("[DataManager] High noise detected: %.1f dB\n", newData.decibels);
-             // Consider signaling UIManager or another component if immediate action needed
-        }
+        // micReadSuccess = true; // Removed
     }
 
     // Temperature & Humidity
@@ -216,14 +212,14 @@ void DataManager::recordEnvironmentDataInternal() {
     if (tempHumSensor_.readData(temp_reading, hum_reading)) { // Use TempHumSensor instance
         newData.temperature = temp_reading;
         newData.humidity = hum_reading;
-        tempHumReadSuccess = true;
+        // tempHumReadSuccess = true; // Removed
     }
 
     // Light Level
     float lux_reading;
     if (lightSensor_.readData(lux_reading)) { // Use LightSensor instance
         newData.lux = lux_reading;
-        lightReadSuccess = true;
+        // lightReadSuccess = true; // Removed
     }
 
     // --- 3. Store Data ---

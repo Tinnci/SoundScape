@@ -208,9 +208,9 @@ void initTime() {
  */
 void logMemoryStatus() {
   Serial.println("\n==== 内存状态 ====");
-  Serial.printf("空闲堆内存: %u 字节\n", ESP.getFreeHeap());
-  Serial.printf("最大空闲块: %u 字节\n", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-  Serial.printf("最小空闲堆: %u 字节\n", ESP.getMinFreeHeap());
+  Serial.printf("空闲堆内存: %lu 字节\n", ESP.getFreeHeap());
+  Serial.printf("最大空闲块: %lu 字节\n", (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  Serial.printf("最小空闲堆: %lu 字节\n", ESP.getMinFreeHeap());
   
   float fragmentation = 0;
   if (ESP.getFreeHeap() > 0) {
@@ -219,7 +219,7 @@ void logMemoryStatus() {
   }
   if (fragmentation > 50) Serial.println("警告: 内存分片严重!");
   
-  Serial.printf("程序空间: %u 字节\n", ESP.getFreeSketchSpace());
+  Serial.printf("程序空间: %lu 字节\n", ESP.getFreeSketchSpace());
   Serial.println("==================");
 }
 

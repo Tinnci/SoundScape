@@ -6,6 +6,9 @@
 #include "EnvironmentData.h"
 #include "i2s_mic_manager.h"
 #include <ESPAsyncWebServer.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 
 class CommunicationManager {
 private:
@@ -19,11 +22,15 @@ private:
     AsyncWebSocket* audioWs;
     std::vector<AsyncWebSocketClient*> audioWsClients;
     static const size_t MAX_AUDIO_WS_CLIENTS = 2;
-    uint8_t wsAudioBuffer[1024];
+    static const size_t WS_AUDIO_BUFFER_SAMPLES = 512; // Number of samples per WebSocket message (Adjust as needed)
+    int16_t wsAudioBuffer[WS_AUDIO_BUFFER_SAMPLES]; // New buffer (512 * 16-bit samples = 1024 bytes)
 
     bool isRunning;
     EnvironmentData currentData;
     I2SMicManager* micManagerPtr;
+
+    // Mutex for protecting audioWsClients vector
+    SemaphoreHandle_t audioClientsMutex;
 
 public:
     CommunicationManager(I2SMicManager* micMgr);

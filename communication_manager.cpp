@@ -14,15 +14,27 @@ CommunicationManager::CommunicationManager(I2SMicManager* micMgr) :
     server(nullptr),
     audioWs(nullptr),
     isRunning(false),
-    micManagerPtr(micMgr)
+    micManagerPtr(micMgr),
+    audioClientsMutex(nullptr) // Initialize mutex handle to null
 {
     clients.reserve(MAX_CLIENTS);
     audioWsClients.reserve(MAX_AUDIO_WS_CLIENTS);
     globalCommManagerPtr = this;
+
+    // Create the mutex
+    audioClientsMutex = xSemaphoreCreateMutex();
+    if (audioClientsMutex == nullptr) {
+        Serial.println("ERR: Failed to create audioClientsMutex!");
+        // Handle error appropriately, maybe prevent starting?
+    }
 }
 
 CommunicationManager::~CommunicationManager() {
     stop();
+    // Delete the mutex
+    if (audioClientsMutex != nullptr) {
+        vSemaphoreDelete(audioClientsMutex);
+    }
     globalCommManagerPtr = nullptr;
 }
 
@@ -257,9 +269,9 @@ void CommunicationManager::setupHttpServer(AsyncWebServer* httpServer) {
                 if (event.data instanceof Blob) {
                     // Read the blob as an ArrayBuffer
                     event.data.arrayBuffer().then(arrayBuffer => {
-                        // Assuming the data is 32-bit PCM samples
-                        const pcmData = new Int32Array(arrayBuffer);
-                        audioBufferQueue.push(pcmData); // Add Int32Array to queue
+                        // Assuming the data is 16-bit PCM samples
+                        const pcmData = new Int16Array(arrayBuffer);
+                        audioBufferQueue.push(pcmData); // Add Int16Array to queue
 
                         // Check if we need to start playing after buffering
                         if (isBuffering) {
@@ -314,9 +326,9 @@ void CommunicationManager::setupHttpServer(AsyncWebServer* httpServer) {
                 if (!pcmData || pcmData.length === 0) continue; // Skip empty buffers
 
                 const float32Data = new Float32Array(pcmData.length);
-                const maxInt32Value = 2147483647.0; // 2^31 - 1
+                const maxInt16Value = 32767.0; // 2^15 - 1 (for int16)
                 for (let i = 0; i < pcmData.length; i++) {
-                    float32Data[i] = pcmData[i] / maxInt32Value;
+                    float32Data[i] = pcmData[i] / maxInt16Value; // Normalize int16 to float -1.0 to 1.0
                 }
 
                 // Prevent creating zero-length buffers
@@ -546,35 +558,61 @@ void CommunicationManager::setupWebSocketServer(AsyncWebServer* httpServer) {
 }
 
 void CommunicationManager::streamAudioViaWebSocket() {
-    if (!micManagerPtr || audioWsClients.empty() || !audioWs) {
-        return; // No mic, no clients, or no WebSocket server
+    // Check if mutex exists before trying to use it
+    if (!micManagerPtr || !audioWs || audioClientsMutex == nullptr) {
+        return; 
     }
 
-    // 从 I2S 读取原始样本
-    const size_t maxSamplesToRead = sizeof(wsAudioBuffer) / sizeof(int32_t);
-    size_t samplesRead = micManagerPtr->readRawSamples((int32_t*)wsAudioBuffer, maxSamplesToRead, 15); // 短超时
+    // Take the mutex to safely check and access audioWsClients
+    if (xSemaphoreTake(audioClientsMutex, (TickType_t)10) != pdTRUE) { // Use a small timeout
+        Serial.println("WARN: Could not obtain audioClientsMutex in streamAudio");
+        return; // Could not get mutex, skip this cycle
+    }
+
+    if (audioWsClients.empty()) {
+        xSemaphoreGive(audioClientsMutex); // Release mutex before returning
+        return; // No clients, release mutex and return
+    }
+
+    // Temporary buffer to read 32-bit samples from I2S
+    int32_t tempReadBuffer[WS_AUDIO_BUFFER_SAMPLES];
+
+    // 从 I2S 读取原始样本 (read into temporary 32-bit buffer)
+    size_t samplesRead = micManagerPtr->readRawSamples(tempReadBuffer, WS_AUDIO_BUFFER_SAMPLES, 15); // 短超时
 
     if (samplesRead > 0) {
-        size_t bytesToSend = samplesRead * sizeof(int32_t);
+        // Convert 32-bit samples to 16-bit and store in wsAudioBuffer
+        for (size_t i = 0; i < samplesRead; ++i) {
+            // Correctly sign-extend 24-bit data from 32-bit slot, then take upper 16 bits
+            int32_t sample32 = tempReadBuffer[i] << 8; // Align MSB if data is in lower bits (check I2S config)
+            // Right shift to get upper 16 bits (sign bit preserved)
+            wsAudioBuffer[i] = (int16_t)(sample32 >> 16); 
+        }
+
+        size_t bytesToSend = samplesRead * sizeof(int16_t); // Calculate bytes for 16-bit data
 
         // 将原始字节作为二进制消息发送给所有连接的 WebSocket 客户端
-        // audioWs->binaryAll(wsAudioBuffer, bytesToSend); // 更简洁的方法
-
-        // 或者手动遍历（如果需要更精细的控制或错误处理）
+        // Manual iteration remains safer within the mutex lock
         for (AsyncWebSocketClient* client : audioWsClients) {
              if (client && client->status() == WS_CONNECTED) {
                  if (client->canSend()) { // 检查客户端是否可以接收数据
-                    client->binary(wsAudioBuffer, bytesToSend);
+                    client->binary((const uint8_t*)wsAudioBuffer, bytesToSend); // Send the 16-bit data buffer
                  } else {
-                     // Serial.printf("WARN: WebSocket client %u cannot send data now.\n", client->id());
+                     // Serial.printf("WARN: WebSocket client %u cannot send data now.\\n\", client->id());
                      // 客户端可能忙碌或缓冲区已满
                  }
              }
         }
 
-        audioWs->cleanupClients(); // 清理可能断开的客户端 (库会自动处理一些)
+        audioWs->cleanupClients(); // It's generally safe to call cleanupClients outside the loop, 
+                                   // but the internal implementation should be thread-safe if possible.
+                                   // Keep it here for now, assuming library handles internal locking or queueing.
+                                   // Alternatively, iterate and mark clients for cleanup, then cleanup after releasing mutex.
         yield(); // 发送后让出时间
     }
+
+    // Release the mutex
+    xSemaphoreGive(audioClientsMutex);
 }
 
 void CommunicationManager::staticOnAudioWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
@@ -584,24 +622,53 @@ void CommunicationManager::staticOnAudioWsEvent(AsyncWebSocket *server, AsyncWeb
 }
 
 void CommunicationManager::onAudioWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+    // Check if mutex exists before trying to use it
+    if (audioClientsMutex == nullptr) {
+        Serial.println("ERR: audioClientsMutex is null in onAudioWsEvent!");
+        return;
+    }
+
     switch (type) {
         case WS_EVT_CONNECT:
             Serial.printf("WebSocket client #%lu connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-            if (audioWsClients.size() < MAX_AUDIO_WS_CLIENTS) {
-                 audioWsClients.push_back(client);
-                 Serial.printf("Client #%lu added. Total audio clients: %d\n", client->id(), audioWsClients.size());
+            // --- Lock Mutex ---
+            if (xSemaphoreTake(audioClientsMutex, portMAX_DELAY) == pdTRUE) {
+                if (audioWsClients.size() < MAX_AUDIO_WS_CLIENTS) {
+                    audioWsClients.push_back(client);
+                    Serial.printf("Client #%lu added. Total audio clients: %d\n", client->id(), audioWsClients.size());
+                } else {
+                    Serial.printf("Max WebSocket audio clients (%d) reached. Rejecting client #%lu.\n", MAX_AUDIO_WS_CLIENTS, client->id());
+                    // Close client outside the lock if possible, or be quick
+                    client->close(); 
+                }
+                 // --- Unlock Mutex ---
+                 xSemaphoreGive(audioClientsMutex);
             } else {
-                 Serial.printf("Max WebSocket audio clients (%d) reached. Rejecting client #%lu.\n", MAX_AUDIO_WS_CLIENTS, client->id());
+                Serial.println("ERR: Could not obtain audioClientsMutex for WS_EVT_CONNECT");
+                 // Maybe close the client if we can't add it? Handle error.
                  client->close();
             }
             break;
         case WS_EVT_DISCONNECT:
             Serial.printf("WebSocket client #%lu disconnected\n", client->id());
-            audioWsClients.erase(
-                std::remove_if(audioWsClients.begin(), audioWsClients.end(),
-                               [client](AsyncWebSocketClient* c) { return c->id() == client->id(); }),
-                audioWsClients.end());
-             Serial.printf("Client #%lu removed. Total audio clients: %d\n", client->id(), audioWsClients.size());
+            // --- Lock Mutex ---
+            if (xSemaphoreTake(audioClientsMutex, portMAX_DELAY) == pdTRUE) {
+                size_t oldSize = audioWsClients.size();
+                audioWsClients.erase(
+                    std::remove_if(audioWsClients.begin(), audioWsClients.end(),
+                                [client](AsyncWebSocketClient* c) { return c->id() == client->id(); }),
+                    audioWsClients.end());
+                size_t newSize = audioWsClients.size();
+                 // --- Unlock Mutex ---
+                 xSemaphoreGive(audioClientsMutex);
+                 if (newSize < oldSize) {
+                    Serial.printf("Client #%lu removed. Total audio clients: %d\n", client->id(), newSize);
+                 } else {
+                    Serial.printf("Client #%lu not found for removal? Total audio clients: %d\n", client->id(), newSize);
+                 }
+            } else {
+                 Serial.println("ERR: Could not obtain audioClientsMutex for WS_EVT_DISCONNECT");
+            }
             break;
         case WS_EVT_DATA:
             Serial.printf("WebSocket client #%lu sent data: %s\n", client->id(), (char*)data);
@@ -611,11 +678,24 @@ void CommunicationManager::onAudioWsEvent(AsyncWebSocket *server, AsyncWebSocket
             break;
         case WS_EVT_ERROR:
              Serial.printf("WebSocket client #%lu error(%u): %s\n", client->id(), *((uint16_t*)arg), (char*)data);
-             audioWsClients.erase(
-                std::remove_if(audioWsClients.begin(), audioWsClients.end(),
-                               [client](AsyncWebSocketClient* c) { return c->id() == client->id(); }),
-                audioWsClients.end());
-             Serial.printf("Client #%lu removed due to error. Total audio clients: %d\n", client->id(), audioWsClients.size());
+             // --- Lock Mutex ---
+             if (xSemaphoreTake(audioClientsMutex, portMAX_DELAY) == pdTRUE) {
+                 size_t oldSize = audioWsClients.size();
+                 audioWsClients.erase(
+                    std::remove_if(audioWsClients.begin(), audioWsClients.end(),
+                                [client](AsyncWebSocketClient* c) { return c->id() == client->id(); }),
+                    audioWsClients.end());
+                 size_t newSize = audioWsClients.size();
+                 // --- Unlock Mutex ---
+                 xSemaphoreGive(audioClientsMutex);
+                 if (newSize < oldSize) {
+                    Serial.printf("Client #%lu removed due to error. Total audio clients: %d\n", client->id(), newSize);
+                 } else {
+                    Serial.printf("Client #%lu not found for removal on error? Total audio clients: %d\n", client->id(), newSize);
+                 }
+             } else {
+                 Serial.println("ERR: Could not obtain audioClientsMutex for WS_EVT_ERROR");
+             }
             break;
         case WS_EVT_PING:
             // Client sent a ping, library handles pong automatically

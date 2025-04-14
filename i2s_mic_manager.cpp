@@ -8,9 +8,8 @@ I2SMicManager::I2SMicManager(uint32_t sample_rate, uint8_t ws_pin, uint8_t sd_pi
     sd_pin_(sd_pin),
     sck_pin_(sck_pin),
     port_num_(port_num),
-    initialized_(false),
-    lastValue_(30.0f), // Initial last value, will be updated by valid readings
-    isHighNoise_(false) {
+    initialized_(false)
+{
 }
 
 bool I2SMicManager::begin() {
@@ -124,58 +123,17 @@ float I2SMicManager::readNoiseLevel(int timeout_ms) {
     db = (db - NOISE_FLOOR) * CALIBRATION_FACTOR + OFFSET_DB;
 
     // processNoiseLevel 现在也能处理 NaN 输入，但这里我们已经保证了 db 不是 NaN
-    return processNoiseLevel(db);
+    return DataValidator::validateDecibels(db);
 }
 
 float I2SMicManager::processNoiseLevel(float rawDb) {
-    // 如果输入是NaN，直接返回NaN
+    // This function is no longer needed as smoothing and high noise logic are removed.
+    // Keeping the function stub might be okay, or remove it entirely.
+    // Let's simplify it to just validate and return.
     if (isnan(rawDb)) {
-        isHighNoise_ = false; // Reset high noise flag if reading is invalid
-        // Do not update lastValue_ with NaN
         return NAN;
     }
-    
-    float db = rawDb; // Work with a copy
-    
-    // 检查是否超过高噪声阈值
-    if (db >= HIGH_NOISE_THRESHOLD) {
-        // 检测到高噪声时立即返回实际值，不进行平滑处理
-        isHighNoise_ = true;
-        // Use DataValidator before assigning to lastValue_ and returning
-        db = DataValidator::validateDecibels(db);
-        lastValue_ = db; // Update lastValue only with valid, validated data
-        Serial.printf("检测到高噪声: %.1f dB\n", db);
-        return db;
-    }
-    
-    // --- 移除人为的 30dB 检查 ---
-    // if (isinf(db) || db < 30.0f) {
-    //     db = 30.0f;
-    // }
-    
-    // --- 移除人为的 120dB 检查, 让 DataValidator 处理 ---
-    // else if (db > 120.0f) {
-    //    db = 120.0f;
-    // }
-    
-    // 非高噪声情况下进行正常处理
-    isHighNoise_ = false;
-    
-    // 应用指数平滑 (only if db is not NaN, which is already checked)
-    // Check if lastValue_ is valid before smoothing
-    if (!isnan(lastValue_)) {
-        db = applyExponentialSmoothing(db);
-    } else {
-        // If lastValue is NaN (e.g., first reading after failure), don't smooth yet
-        // or just use the current db value directly.
-    }
-    
-    // 使用DataValidator最终验证结果 (handles NaN, min, max)
-    db = DataValidator::validateDecibels(db);
-    
-    // 保存当前有效且验证后的值作为下一次的lastValue_
-    lastValue_ = db; // lastValue should only store valid, smoothed, validated results
-    return db;
+    return DataValidator::validateDecibels(rawDb);
 }
 
 double I2SMicManager::calculateRMS(const int32_t* samples, size_t count) {
@@ -209,19 +167,6 @@ double I2SMicManager::calculateRMS(const int32_t* samples, size_t count) {
     double normalized_rms = sqrt(mean_sq) / 8388608.0;
     
     return normalized_rms; // Return normalized RMS
-}
-
-float I2SMicManager::applyExponentialSmoothing(float newValue) {
-    // Ensure lastValue is not NaN before using it in calculation
-    if (isnan(lastValue_)) {
-        return newValue; // If previous value was invalid, don't smooth, return current
-    }
-    
-    // 根据数值变化方向选择不同的平滑系数
-    float alpha = (newValue > lastValue_) ? ALPHA_RISE : ALPHA_FALL;
-    
-    // 应用指数平滑
-    return alpha * newValue + (1.0f - alpha) * lastValue_;
 }
 
 void I2SMicManager::end() {
