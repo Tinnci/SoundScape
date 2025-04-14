@@ -8,13 +8,16 @@
 
 class I2SMicManager {
 private:
-    i2s_chan_handle_t rx_handle_;
+    // Match initialization order in constructor
     uint32_t sample_rate_;
     uint8_t ws_pin_;
     uint8_t sd_pin_;
     uint8_t sck_pin_;
     i2s_port_t port_num_;
+    i2s_chan_handle_t rx_handle_;
     bool initialized_;
+    float lastValue_; // Keep initialization here for clarity
+    bool isHighNoise_; // Keep initialization here for clarity
     
     // 采样缓冲区（静态分配以减少内存碎片）
     static constexpr size_t BUFFER_SIZE = 256;  // 保持较小的缓冲区以维持快速响应
@@ -28,12 +31,10 @@ private:
     
     // 高噪声阈值设置
     static constexpr float HIGH_NOISE_THRESHOLD = 60.0f;  // 保持高噪声阈值不变
-    bool isHighNoise_ = false;  // 高噪声状态标志
     
     // 指数移动平均参数
     static constexpr float ALPHA_RISE = 0.5f;  // 保持快速上升响应
     static constexpr float ALPHA_FALL = 0.4f;  // 保持快速下降响应
-    float lastValue_ = 30.0f;  // 上一次的读数
     
 public:
     I2SMicManager(uint32_t sample_rate = 16000, 

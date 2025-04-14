@@ -1,40 +1,38 @@
 #include "light_screen.h"
+#include "data_manager.h" // Include DataManager for getLatestData
+#include "ui_constants.h" // Include constants (e.g., TITLE_Y)
 
-// Define constants from the old ui.cpp (consider moving to a shared config header later)
-const int V_PADDING = 5;
-const int TITLE_Y = V_PADDING + 5;
-
-// Constructor implementation
-LightScreen::LightScreen(TFT_eSPI& display, EnvironmentData* data, int& dataIdxRef) :
-    Screen(display, data, dataIdxRef) // Call base class constructor
+// Constructor implementation - Pass DataManager reference to base class
+LightScreen::LightScreen(TFT_eSPI& display, DataManager& dataMgr) :
+    Screen(display, dataMgr) // Call base class constructor with DataManager
 {}
 
-// draw() method implementation (moved from ui.cpp::drawLightScreen)
-void LightScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
-    // Assume UIManager clears screen during transition
-    // tft.fillScreen(TFT_ORANGE); // Remove fillScreen for transitions
-    tft.setTextColor(TFT_BLACK, TFT_ORANGE); // Black text on orange (Set color)
+// draw() method implementation
+void LightScreen::draw(int yOffset /* = 0 */) {
+    tft.setTextColor(TFT_BLACK, TFT_ORANGE); // Set color
 
     // Title - Centered, Size 3
     tft.setTextDatum(TC_DATUM);
     tft.setTextSize(3);
-    tft.drawString("Light Intensity", tft.width() / 2, TITLE_Y + 10 + yOffset); // Apply offset
+    // Use TITLE_Y from ui_constants.h
+    tft.drawString("Light Intensity", tft.width() / 2, TITLE_Y + 10 + yOffset);
 
     // Value - Centered, Large Size 5
     tft.setTextSize(5);
-    int valueY = tft.height() / 2 - 20 + yOffset; // Apply offset
-    const EnvironmentData& latestData = getLatestData(); // Use helper from base class
+    int valueY = tft.height() / 2 - 20 + yOffset;
+    // Use getLatestData() helper from base class (which now uses DataManager)
+    const EnvironmentData& latestData = getLatestData();
 
-    // Check if lux value is valid (not NaN)
-    if (!isnan(latestData.lux)) { // 只检查 isnan()
+    // Check lux value
+    if (!isnan(latestData.lux)) {
        tft.drawFloat(latestData.lux, 0, tft.width() / 2, valueY);
     } else {
-       tft.drawString("---", tft.width() / 2, valueY); // 使用 "---"
+       tft.drawString("---", tft.width() / 2, valueY);
     }
 
     // Unit - Below value, Size 3
     tft.setTextSize(3);
-    tft.drawString("lx", tft.width() / 2, valueY + 50); // Apply offset (relative to valueY)
+    tft.drawString("lx", tft.width() / 2, valueY + 50);
 
     tft.setTextDatum(TL_DATUM); // Reset datum
 }

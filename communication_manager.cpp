@@ -586,43 +586,43 @@ void CommunicationManager::staticOnAudioWsEvent(AsyncWebSocket *server, AsyncWeb
 void CommunicationManager::onAudioWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     switch (type) {
         case WS_EVT_CONNECT:
-            Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-            // 检查是否达到最大客户端数
+            Serial.printf("WebSocket client #%lu connected from %s\n", client->id(), client->remoteIP().toString().c_str());
             if (audioWsClients.size() < MAX_AUDIO_WS_CLIENTS) {
-                 // 添加到客户端列表
                  audioWsClients.push_back(client);
-                 Serial.printf("Client #%u added. Total audio clients: %d\n", client->id(), audioWsClients.size());
+                 Serial.printf("Client #%lu added. Total audio clients: %d\n", client->id(), audioWsClients.size());
             } else {
-                 Serial.printf("Max WebSocket audio clients (%d) reached. Rejecting client #%u.\n", MAX_AUDIO_WS_CLIENTS, client->id());
-                 client->close(); // 关闭连接
+                 Serial.printf("Max WebSocket audio clients (%d) reached. Rejecting client #%lu.\n", MAX_AUDIO_WS_CLIENTS, client->id());
+                 client->close();
             }
             break;
         case WS_EVT_DISCONNECT:
-            Serial.printf("WebSocket client #%u disconnected\n", client->id());
-            // 从列表中移除客户端
-            // 使用 remove_if 和 erase 的组合更安全
+            Serial.printf("WebSocket client #%lu disconnected\n", client->id());
             audioWsClients.erase(
                 std::remove_if(audioWsClients.begin(), audioWsClients.end(),
                                [client](AsyncWebSocketClient* c) { return c->id() == client->id(); }),
                 audioWsClients.end());
-             Serial.printf("Client #%u removed. Total audio clients: %d\n", client->id(), audioWsClients.size());
+             Serial.printf("Client #%lu removed. Total audio clients: %d\n", client->id(), audioWsClients.size());
             break;
         case WS_EVT_DATA:
-            // 处理从客户端收到的数据 (本例中音频流是单向的，所以通常不处理)
-            Serial.printf("WebSocket client #%u sent data: %s\n", client->id(), (char*)data);
-            // 可以根据需要添加命令处理，例如 client->text("Command received");
+            Serial.printf("WebSocket client #%lu sent data: %s\n", client->id(), (char*)data);
             break;
         case WS_EVT_PONG:
-            // Serial.printf("WebSocket client #%u pong\n", client->id());
+            // Serial.printf("WebSocket client #%lu pong\n", client->id());
             break;
         case WS_EVT_ERROR:
-             Serial.printf("WebSocket client #%u error(%u): %s\n", client->id(), *((uint16_t*)arg), (char*)data);
-             // 错误发生时也应该移除客户端
+             Serial.printf("WebSocket client #%lu error(%u): %s\n", client->id(), *((uint16_t*)arg), (char*)data);
              audioWsClients.erase(
                 std::remove_if(audioWsClients.begin(), audioWsClients.end(),
                                [client](AsyncWebSocketClient* c) { return c->id() == client->id(); }),
                 audioWsClients.end());
-             Serial.printf("Client #%u removed due to error. Total audio clients: %d\n", client->id(), audioWsClients.size());
+             Serial.printf("Client #%lu removed due to error. Total audio clients: %d\n", client->id(), audioWsClients.size());
             break;
+        case WS_EVT_PING:
+            // Client sent a ping, library handles pong automatically
+            // Serial.printf("WebSocket client #%lu ping\n", client->id());
+            break;
+        default:
+            // Serial.printf("Unhandled WebSocket event type: %d for client #%lu\n", type, client->id());
+            break; 
     }
 } 

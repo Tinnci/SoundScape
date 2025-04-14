@@ -3,13 +3,15 @@
 
 #include "screen.h"
 
+// Forward declaration
+class DataManager;
+
 class StatusScreen : public Screen {
 public:
-    // Constructor passes dependencies to the base Screen class
-    StatusScreen(TFT_eSPI& display, EnvironmentData* data, int& dataIdxRef);
+    // Constructor now takes DataManager reference
+    StatusScreen(TFT_eSPI& display, DataManager& dataMgr);
 
-    // Override the draw method from the base class
-    void draw(int yOffset = 0) override; // Add yOffset parameter
+    void draw(int yOffset = 0) override;
 };
 
 #endif // STATUS_SCREEN_H

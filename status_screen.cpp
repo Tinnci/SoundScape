@@ -1,40 +1,36 @@
 #include "status_screen.h"
 #include "ui_manager.h" // Include UIManager to access state getters
+#include "data_manager.h" // Include DataManager (though not directly used for data here)
 #include "ui.h" // Include for LED_MODE definitions
-#include <WiFi.h> // Still needed for WiFi.localIP() if used directly
+#include "ui_constants.h" // Include constants
+#include <WiFi.h> // Still needed for WiFi.localIP()
 
-// Define constants from the old ui.cpp (consider moving to a shared config header later)
-const int H_PADDING = 10;
-const int V_PADDING = 5;
-const int LINE_HEIGHT = 25;
-const int TITLE_Y = V_PADDING + 5;
-
-// Constructor implementation
-StatusScreen::StatusScreen(TFT_eSPI& display, EnvironmentData* data, int& dataIdxRef) :
-    Screen(display, data, dataIdxRef) // Call base class constructor
+// Constructor implementation - Pass DataManager reference to base class
+StatusScreen::StatusScreen(TFT_eSPI& display, DataManager& dataMgr) :
+    Screen(display, dataMgr) // Call base class constructor with DataManager
 {}
 
-// draw() method implementation (moved from ui.cpp::drawStatusScreen)
-void StatusScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
-    // Assume UIManager clears screen during transition
-    // tft.fillScreen(TFT_DARKCYAN); // Remove fillScreen for transitions
+// draw() method implementation
+void StatusScreen::draw(int yOffset /* = 0 */) {
     tft.setTextColor(TFT_WHITE, TFT_DARKCYAN); // Set color
 
-    // Title - Centered, Size 2 (减小标题大小)
+    // Title - Centered, Size 2
     tft.setTextDatum(TC_DATUM);
     tft.setTextSize(2);
-    tft.drawString("System Status", tft.width() / 2, TITLE_Y + 5 + yOffset); // 减小顶部间距
+    // Use TITLE_Y from ui_constants.h
+    tft.drawString("System Status", tft.width() / 2, TITLE_Y + 5 + yOffset);
     tft.setTextDatum(TL_DATUM);
 
     // Status Info - Size 2, Aligned
     tft.setTextSize(2);
-    int currentY = TITLE_Y + LINE_HEIGHT + yOffset; // 减小标题后的间距
+    // Use TITLE_Y, LINE_HEIGHT, H_PADDING from ui_constants.h
+    int currentY = TITLE_Y + LINE_HEIGHT + yOffset;
     int labelX = H_PADDING;
     int statusX = H_PADDING + 120;
 
-    // Access status flags via UIManager pointer
+    // Access status flags via UIManager pointer (available via base Screen class)
     if (!uiManagerPtr_) {
-        tft.drawString("Error: UIManager not available", labelX, currentY);
+        tft.drawString("Error: UIManager N/A", labelX, currentY);
         return;
     }
 
@@ -49,7 +45,7 @@ void StatusScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
         tft.setTextColor(TFT_GREEN, TFT_DARKCYAN);
         tft.drawString("Connected", statusX, currentY);
         tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
-        currentY += LINE_HEIGHT - 5; // 减小行间距
+        currentY += LINE_HEIGHT - 5;
         tft.drawString("IP:", labelX + 10, currentY);
         tft.drawString(WiFi.localIP().toString(), statusX, currentY);
     } else {
@@ -57,7 +53,7 @@ void StatusScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
         tft.drawString("Not Connected", statusX, currentY);
         tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
     }
-    currentY += LINE_HEIGHT; // 减小到下一个状态的间距
+    currentY += LINE_HEIGHT;
 
     // SD Card Status
     tft.drawString("SD Card:", labelX, currentY);
@@ -70,7 +66,7 @@ void StatusScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
         tft.drawString("Failed/Missing", statusX, currentY);
         tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
     }
-    currentY += LINE_HEIGHT; // 减小到下一个状态的间距
+    currentY += LINE_HEIGHT;
 
     // NTP Time Status
     tft.drawString("NTP Time:", labelX, currentY);
@@ -83,7 +79,7 @@ void StatusScreen::draw(int yOffset /* = 0 */) { // Add yOffset parameter
         tft.drawString("Not Synced", statusX, currentY);
         tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
     }
-    currentY += LINE_HEIGHT; // 减小到下一个状态的间距
+    currentY += LINE_HEIGHT;
 
     // LED Mode Status
     tft.drawString("LED Mode:", labelX, currentY);

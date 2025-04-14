@@ -8,11 +8,11 @@
 
 // Define button pins used by UIManager for navigation
 // (Moved from sketch_mar18b.ino)
-#define BTN1_PIN 2
-#define BTN3_PIN 41
+// #define BTN1_PIN 2 // <<<<< REMOVED
+// #define BTN3_PIN 41 // <<<<< REMOVED
 
-#define BTN_UP_PIN   BTN1_PIN // Assuming BTN1 is Up
-#define BTN_DOWN_PIN BTN3_PIN // Assuming BTN3 is Down
+#define BTN_UP_PIN   2 // Define symbolic names for navigation pins used by UIManager
+#define BTN_DOWN_PIN 41 // Define symbolic names for navigation pins used by UIManager
 // Other button pins can be handled by individual screens or passed to handleInput
 
 class UIManager {

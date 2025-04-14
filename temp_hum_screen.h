@@ -3,13 +3,15 @@
 
 #include "screen.h"
 
+// Forward declaration
+class DataManager;
+
 class TempHumScreen : public Screen {
 public:
-    // Constructor passes dependencies to the base Screen class
-    TempHumScreen(TFT_eSPI& display, EnvironmentData* data, int& dataIdxRef);
+    // Constructor now takes DataManager reference
+    TempHumScreen(TFT_eSPI& display, DataManager& dataMgr);
 
-    // Override the draw method from the base class
-    void draw(int yOffset = 0) override; // Add yOffset parameter
+    void draw(int yOffset = 0) override;
 };
 
 #endif // TEMP_HUM_SCREEN_H

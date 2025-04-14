@@ -3,13 +3,15 @@
 
 #include "screen.h"
 
+// Forward declaration
+class DataManager;
+
 class NoiseScreen : public Screen {
 public:
-    // Constructor passes dependencies to the base Screen class
-    NoiseScreen(TFT_eSPI& display, EnvironmentData* data, int& dataIdxRef);
+    // Constructor now takes DataManager reference
+    NoiseScreen(TFT_eSPI& display, DataManager& dataMgr);
 
-    // Override the draw method from the base class
-    void draw(int yOffset = 0) override; // Add yOffset parameter
+    void draw(int yOffset = 0) override;
 };
 
 #endif // NOISE_SCREEN_H

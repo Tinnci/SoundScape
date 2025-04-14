@@ -3,13 +3,15 @@
 
 #include "screen.h"
 
+// Forward declaration
+class DataManager;
+
 class LightScreen : public Screen {
 public:
-    // Constructor passes dependencies to the base Screen class
-    LightScreen(TFT_eSPI& display, EnvironmentData* data, int& dataIdxRef);
+    // Constructor now takes DataManager reference
+    LightScreen(TFT_eSPI& display, DataManager& dataMgr);
 
-    // Override the draw method from the base class
-    void draw(int yOffset = 0) override; // Add yOffset parameter
+    void draw(int yOffset = 0) override;
 };
 
 #endif // LIGHT_SCREEN_H
